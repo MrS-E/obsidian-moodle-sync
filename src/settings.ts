@@ -1,11 +1,15 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 
 export interface MoodleSyncSettings {
-	baseUrl: string;             // https://moodle.example.edu
-	token: string;               // wstoken
-	rootFolder: string;          // Moodle
-	resourcesFolder: string;     // Moodle/_resources
-	concurrency: number;         // 1..10
+	baseUrl: string;
+	token: string;
+	rootFolder: string;
+	resourcesFolder: string;
+	concurrency: number;
+
+	// v2
+	writeLogFile: boolean;     // write Moodle/_sync-log.md
+	logFilePath: string;       // default Moodle/_sync-log.md
 }
 
 export const DEFAULT_SETTINGS: MoodleSyncSettings = {
@@ -13,7 +17,10 @@ export const DEFAULT_SETTINGS: MoodleSyncSettings = {
 	token: "",
 	rootFolder: "Moodle",
 	resourcesFolder: "Moodle/_resources",
-	concurrency: 4
+	concurrency: 4,
+
+	writeLogFile: true,
+	logFilePath: "Moodle/_sync-log.md"
 };
 
 export class MoodleSyncSettingTab extends PluginSettingTab {
@@ -27,7 +34,7 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Moodle Base URL")
-			.setDesc("Example: https://moodle.example.edu (no trailing slash preferred)")
+			.setDesc("Example: https://moodle.example.edu (no trailing slash)")
 			.addText(t => t
 				.setPlaceholder("https://moodle.example.edu")
 				.setValue(this.plugin.settings.baseUrl)
@@ -38,7 +45,7 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Web service token")
-			.setDesc("User token for Moodle Web Services.")
+			.setDesc("Moodle WS token (wstoken).")
 			.addText(t => t
 				.setPlaceholder("wstoken...")
 				.setValue(this.plugin.settings.token)
@@ -58,7 +65,7 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Resources folder")
-			.setDesc("Where attachments are stored (mirrored).")
+			.setDesc("Attachments are mirrored under this folder.")
 			.addText(t => t
 				.setValue(this.plugin.settings.resourcesFolder)
 				.onChange(async (value) => {
@@ -75,6 +82,26 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.concurrency)
 				.onChange(async (value) => {
 					this.plugin.settings.concurrency = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName("Write sync log file")
+			.setDesc("Append a summary to a log note in your vault.")
+			.addToggle(t => t
+				.setValue(this.plugin.settings.writeLogFile)
+				.onChange(async (value) => {
+					this.plugin.settings.writeLogFile = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName("Log file path")
+			.setDesc("Where to append logs (markdown).")
+			.addText(t => t
+				.setValue(this.plugin.settings.logFilePath)
+				.onChange(async (value) => {
+					this.plugin.settings.logFilePath = value.trim();
 					await this.plugin.saveSettings();
 				}));
 	}

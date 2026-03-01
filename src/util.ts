@@ -17,17 +17,24 @@ export function isEmbeddableMedia(filename: string): boolean {
 }
 
 export function nowStamp(): string {
-	// YYYYMMDD-HHMMSS
 	const d = new Date();
 	const pad = (n: number) => String(n).padStart(2, "0");
 	return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
 export function simpleHash(text: string): string {
-	// cheap stable hash
 	let h = 0;
 	for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
 	return String(h);
+}
+
+export function formatBytes(n: number): string {
+	if (!Number.isFinite(n) || n <= 0) return "0 B";
+	const units = ["B","KB","MB","GB","TB"];
+	let i = 0;
+	let v = n;
+	while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+	return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 /** Minimal concurrency limiter */
@@ -47,8 +54,7 @@ export function createLimiter(max: number) {
 		return await new Promise<T>((resolve, reject) => {
 			queue.push(async () => {
 				try {
-					const res = await fn();
-					resolve(res);
+					resolve(await fn());
 				} catch (e) {
 					reject(e);
 				} finally {

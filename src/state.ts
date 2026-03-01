@@ -4,7 +4,7 @@ export interface FileState {
 }
 
 export interface NoteState {
-	lastSyncedHash: string; // hash of the note content we last wrote from remote
+	lastSyncedHash: string;
 }
 
 export interface SyncState {
