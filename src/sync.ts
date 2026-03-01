@@ -357,10 +357,9 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 			}
 
 			const localText = await app.vault.read(af);
-			const stamped = a.path.replace(/\.md$/, `.${nowStamp()}.md`);
+			const stamped = uniqueTwinPath(app, a.path);
+			await safeCreateText(app, stamped, markTwin(localText));
 
-			await ensureFolder(app, parentDir(stamped));
-			await app.vault.create(stamped, localText);
 			await app.vault.modify(af, a.remoteText);
 
 			state.notes[a.path] = { lastSyncedHash: simpleHash(a.remoteText) };
@@ -511,4 +510,35 @@ async function createOrOverwrite(app: App, path: string, text: string) {
 	}
 
 	throw new Error(`${path} exists and is not a file.`);
+}
+
+function uniqueTwinPath(app: App, originalMdPath: string): string {
+	const base = originalMdPath.replace(/\.md$/i, "");
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-"); // includes ms
+	let candidate = `${base}.${stamp}.md`;
+
+	let i = 1;
+	while (app.vault.getAbstractFileByPath(candidate)) {
+		candidate = `${base}.${stamp}.${i}.md`;
+		i++;
+	}
+	return candidate;
+}
+
+async function safeCreateText(app: App, path: string, text: string) {
+	try {
+		await ensureFolder(app, parentDir(path));
+		await app.vault.create(path, text);
+	} catch (e: any) {
+		console.error("CREATE FAILED (already exists?)", path, e);
+		throw e;
+	}
+}
+
+function markTwin(text: string): string {
+	// Put the tag at the very top so it’s easy to find/search in Obsidian.
+	// Keep a blank line after for readability.
+	const tag = "#conflict";
+	if (text.startsWith(tag)) return text;
+	return `${tag}\n\n${text}`;
 }
