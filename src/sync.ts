@@ -319,16 +319,14 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 			return;
 
 		case "note-create":
-			await ensureFolder(app, parentDir(a.path));
-			await app.vault.create(a.path, a.text);
+			await createOrOverwrite(app, a.path, a.text);
 			state.notes[a.path] = { lastSyncedHash: simpleHash(a.text) };
 			return;
 
 		case "note-update": {
 			const af = app.vault.getAbstractFileByPath(a.path);
 			if (!af) {
-				await ensureFolder(app, parentDir(a.path));
-				await app.vault.create(a.path, a.text);
+				await createOrOverwrite(app, a.path, a.text);
 				state.notes[a.path] = { lastSyncedHash: simpleHash(a.text) };
 				return;
 			}
@@ -353,8 +351,7 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 			const af = app.vault.getAbstractFileByPath(a.path);
 			if (!af || !(af instanceof TFile)) {
 				// if missing, just create it
-				await ensureFolder(app, parentDir(a.path));
-				await app.vault.create(a.path, a.remoteText);
+				await createOrOverwrite(app, a.path, a.remoteText);
 				state.notes[a.path] = { lastSyncedHash: simpleHash(a.remoteText) };
 				return;
 			}
@@ -497,4 +494,21 @@ async function appendLog(app: App, logPath: string, text: string) {
 		const cur = await app.vault.read(af);
 		await app.vault.modify(af, cur + entry);
 	}
+}
+
+async function createOrOverwrite(app: App, path: string, text: string) {
+	const existing = app.vault.getAbstractFileByPath(path);
+
+	if (!existing) {
+		await ensureFolder(app, parentDir(path));
+		await app.vault.create(path, text);
+		return;
+	}
+
+	if (existing instanceof TFile) {
+		await app.vault.modify(existing, text);
+		return;
+	}
+
+	throw new Error(`${path} exists and is not a file.`);
 }
