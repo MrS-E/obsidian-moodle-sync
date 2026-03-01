@@ -1,99 +1,74 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { Notice, Plugin } from "obsidian";
+import { MoodleSyncSettingTab, DEFAULT_SETTINGS, MoodleSyncSettings } from "./settings";
+import { MoodleClient } from "./moodleClient";
+import { DEFAULT_STATE, SyncState } from "./state";
+import { runSync } from "./sync";
 
-// Remember to rename these classes and interfaces!
-
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class MoodleSyncPoC extends Plugin {
+	settings: MoodleSyncSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+		this.addSettingTab(new MoodleSyncSettingTab(this.app, this));
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+			id: "moodle-sync-poc-now",
+			name: "Moodle Sync PoC: Sync now",
+			callback: async () => {
+				try {
+					if (!this.settings.baseUrl || !this.settings.token) {
+						new Notice("Set base URL + token in plugin settings first.");
+						return;
 					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+					const client = new MoodleClient(this.settings.baseUrl, this.settings.token);
+					const state = await this.loadSyncState();
+					await runSync(this.app, client, this.settings, state, (s) => this.saveSyncState(s));
+				} catch (e: any) {
+					console.error(e);
+					new Notice(`Sync failed: ${e?.message ?? e}`);
 				}
-				return false;
 			}
 		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
+		this.addCommand({
+			id: "moodle-sync-poc-test-connection",
+			name: "Moodle Sync PoC: Test connection",
+			callback: async () => {
+				try {
+					if (!this.settings.baseUrl || !this.settings.token) {
+						new Notice("Set base URL + token first.");
+						return;
+					}
+					const client = new MoodleClient(this.settings.baseUrl, this.settings.token);
+					const site = await client.call<any>("core_webservice_get_site_info");
+					new Notice(`OK: ${site.sitename ?? "Moodle"} / ${site.username ?? site.userid}`);
+				} catch (e: any) {
+					console.error(e);
+					new Notice(`Test failed: ${e?.message ?? e}`);
+				}
+			}
 		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
 	}
 
-	onunload() {
-	}
+	onunload() {}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
-}
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
+	private async loadSyncState(): Promise<SyncState> {
+		const data = (await this.loadData()) as any;
+		return (data?.syncState ?? DEFAULT_STATE) as SyncState;
 	}
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+	private async saveSyncState(state: SyncState): Promise<void> {
+		const data = (await this.loadData()) as any ?? {};
+		data.syncState = state;
+		await this.saveData(data);
 	}
 }
