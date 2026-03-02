@@ -1,7 +1,8 @@
 import { App, Notice, TFile, TFolder, normalizePath } from "obsidian";
 import { MoodleClient } from "./moodleClient";
 import { SyncState } from "./state";
-import { createLimiter, formatBytes, isEmbeddableMedia, join, nowStamp, safeName, simpleHash } from "./util";
+import { createLimiter, formatBytes, isEmbeddableMedia, join, safeName, simpleHash } from "./util";
+import { ensureUserSection, extractBlock, upsertBlock } from "./blocks";
 
 type MoodleCourse = { id: number; fullname?: string; shortname?: string };
 type MoodleSection = { id: number; name?: string; section?: number; modules?: MoodleModule[] };
@@ -32,9 +33,8 @@ export interface SyncProgress {
 
 type PlanAction =
 	| { kind: "ensure-folder"; path: string }
-	| { kind: "note-create"; path: string; text: string }
-	| { kind: "note-update"; path: string; text: string }
-	| { kind: "note-conflict-keep-both"; path: string; remoteText: string }
+	| { kind: "note-create"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean }
+	| { kind: "note-update"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean; noOp?: boolean }
 	| { kind: "file-download"; destPath: string; fileurl: string; timemodified?: number; filesize?: number }
 	| { kind: "file-skip"; destPath: string };
 
@@ -82,7 +82,6 @@ export async function runSyncV2(
 		`${plan.summary.noteConflicts} conflicts`
 	);
 
-	// steps = actions + downloads (downloads count as actions already)
 	progress.totalSteps = plan.actions.length;
 
 	if (mode === "dry-run") {
@@ -133,16 +132,20 @@ async function buildPlan(
 
 		const sections = await client.call<MoodleSection[]>("core_course_get_contents", { courseid: course.id });
 
-		// Course index note
+		// Course index note (managed block: index)
 		{
 			const indexPath = join(courseFolder, `_index.md`);
-			const indexMd = renderCourseIndex(courseName, courseId, sections);
+			const rendered = renderCourseIndexManaged(courseName, courseId, sections);
+			const noteDecision = await planNoteMergeBlocks(app, state, indexPath, rendered.text, rendered.blocks);
 
-			const noteDecision = await planNoteUpsert(app, state, indexPath, indexMd);
-			if (noteDecision.kind === "note-create") notesCreate++;
-			if (noteDecision.kind === "note-update") notesUpdate++;
-			if (noteDecision.kind === "note-conflict-keep-both") noteConflicts++;
-			actions.push(noteDecision);
+			if (noteDecision.kind === "note-update" && noteDecision.noOp) {
+				// nothing
+			} else {
+				if (noteDecision.kind === "note-create") notesCreate++;
+				if (noteDecision.kind === "note-update") notesUpdate++;
+				if (noteDecision.conflicted) noteConflicts++;
+				actions.push(noteDecision);
+			}
 		}
 
 		for (const section of sections ?? []) {
@@ -150,18 +153,19 @@ async function buildPlan(
 				const modName = safeName(mod.name ?? `${mod.modname ?? "module"}-${mod.id}`);
 				const modNotePath = join(courseFolder, `${modName}.md`);
 
-				const { noteMd, files } = planModule(courseResFolder, section, mod);
+				const { noteText, remoteBlocks, files } = planModule(courseResFolder, section, mod);
 
-				// Note
-				const noteDecision = await planNoteUpsert(app, state, modNotePath, noteMd);
-				if (noteDecision.kind === "note-create") notesCreate++;
-				if (noteDecision.kind === "note-update") notesUpdate++;
-				if (noteDecision.kind === "note-conflict-keep-both") noteConflicts++;
-				actions.push(noteDecision);
+				const noteDecision = await planNoteMergeBlocks(app, state, modNotePath, noteText, remoteBlocks);
+				if (noteDecision.kind === "note-update" && noteDecision.noOp) {
+					// nothing
+				} else {
+					if (noteDecision.kind === "note-create") notesCreate++;
+					if (noteDecision.kind === "note-update") notesUpdate++;
+					if (noteDecision.conflicted) noteConflicts++;
+					actions.push(noteDecision);
+				}
 
-				// Files
 				for (const f of files) {
-					// ensure parent dir for file
 					const dir = parentDir(f.destPath);
 					if (dir) actions.push({ kind: "ensure-folder", path: dir });
 
@@ -178,8 +182,6 @@ async function buildPlan(
 		}
 	}
 
-	// Remove no-op note updates/creates? (planNoteUpsert never emits no-op)
-	// Remove duplicate ensure-folder actions (keep first occurrence)
 	const deduped = dedupeEnsureFolder(actions);
 
 	return {
@@ -198,32 +200,58 @@ async function buildPlan(
 	};
 }
 
-async function planNoteUpsert(app: App, state: SyncState, path: string, remoteText: string): Promise<PlanAction> {
+async function planNoteMergeBlocks(
+	app: App,
+	state: SyncState,
+	path: string,
+	renderedRemoteNoteText: string,
+	remoteBlocks: Record<string, string>
+): Promise<Extract<PlanAction, { kind: "note-create" | "note-update" }>> {
 	const af = app.vault.getAbstractFileByPath(path);
 
-	if (!af) return { kind: "note-create", path, text: remoteText };
-	if (!(af instanceof TFile)) return { kind: "note-update", path, text: remoteText }; // weird but proceed
-
-	const currentLocal = await app.vault.read(af);
-	const localHash = simpleHash(currentLocal);
-	const remoteHash = simpleHash(remoteText);
-	const lastSyncedHash = state.notes[path]?.lastSyncedHash;
-
-	// no-op: remote equals local -> treat as update? better: do nothing
-	if (localHash === remoteHash) {
-		// Keep state fresh when applying; in plan we skip writing.
-		// We'll update state during apply if needed (we don’t need an action).
-		// But to keep progress consistent, emit a "note-update" only if applying? We'll just skip.
-		return { kind: "note-update", path, text: currentLocal }; // will be ignored by apply as no-op via hashes
+	if (!af) {
+		const noteText = ensureUserSection(renderedRemoteNoteText);
+		return { kind: "note-create", path, text: noteText, remoteBlocks, conflicted: false };
 	}
 
-	// local unchanged since last sync -> update in place
-	if (lastSyncedHash && localHash === lastSyncedHash) {
-		return { kind: "note-update", path, text: remoteText };
+	if (!(af instanceof TFile)) {
+		const noteText = ensureUserSection(renderedRemoteNoteText);
+		return { kind: "note-update", path, text: noteText, remoteBlocks, conflicted: false };
 	}
 
-	// otherwise conflict
-	return { kind: "note-conflict-keep-both", path, remoteText };
+	const localText = await app.vault.read(af);
+	const baseBlocks = state.notes[path]?.baseBlocks ?? {};
+	const remoteBlocksHash = hashBlocks(remoteBlocks);
+	const stateUpToDate = (state.notes[path]?.lastSyncedManagedHash === remoteBlocksHash);
+
+	let mergedText = localText;
+	let conflicted = false;
+
+	for (const [name, remoteInner] of Object.entries(remoteBlocks)) {
+		const L = (extractBlock(localText, name) ?? "").replace(/\s+$/, "");
+		const R = (remoteInner ?? "").replace(/\s+$/, "");
+		// If we don't have a base yet, treat current local block as base.
+		const B = (baseBlocks[name] ?? L ?? "").replace(/\s+$/, "");
+
+		const merged = mergeBlock({ name, base: B, local: L, remote: R });
+		mergedText = upsertBlock(mergedText, name, merged.inner);
+		if (merged.conflicted) conflicted = true;
+	}
+
+	mergedText = ensureUserSection(mergedText);
+	if (conflicted) mergedText = ensureConflictTags(mergedText);
+
+	const needsWrite = simpleHash(mergedText) !== simpleHash(localText);
+	const needsStateRefresh = !stateUpToDate;
+
+	return {
+		kind: "note-update",
+		path,
+		text: mergedText,
+		remoteBlocks,
+		conflicted,
+		noOp: (!needsWrite && !needsStateRefresh)
+	};
 }
 
 function planModule(courseResFolder: string, section: MoodleSection, mod: MoodleModule) {
@@ -254,8 +282,8 @@ function planModule(courseResFolder: string, section: MoodleSection, mod: Moodle
 		links.push(isEmbeddableMedia(filename) ? `- ![[${destPath}]]` : `- [[${destPath}]]`);
 	}
 
-	const noteMd = renderModuleNote(section, mod, links);
-	return { noteMd, files };
+	const rendered = renderModuleNoteManaged(section, mod, links);
+	return { noteText: rendered.text, remoteBlocks: rendered.blocks, files };
 }
 
 /* ---------------- Apply ---------------- */
@@ -276,10 +304,6 @@ async function applyPlan(
 		progress.setStatus(`Moodle Sync: ${completed}/${progress.totalSteps}`);
 	};
 
-	// We apply sequentially for folder/note actions, but download actions with concurrency.
-	// Strategy:
-	// 1) Run all ensure-folder and note actions sequentially (stable ordering)
-	// 2) Collect downloads and run with limiter
 	const downloadActions: Array<Extract<PlanAction, { kind: "file-download" }>> = [];
 
 	for (const a of plan.actions) {
@@ -296,7 +320,6 @@ async function applyPlan(
 		completed++; progress.tick(); setProgressText();
 	}
 
-	// downloads in parallel
 	await Promise.allSettled(downloadActions.map(a =>
 		limiter(async () => {
 			try {
@@ -320,14 +343,20 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 
 		case "note-create":
 			await createOrOverwrite(app, a.path, a.text);
-			state.notes[a.path] = { lastSyncedHash: simpleHash(a.text) };
+			state.notes[a.path] = {
+				baseBlocks: normalizeBlocks(a.remoteBlocks),
+				lastSyncedManagedHash: hashBlocks(a.remoteBlocks)
+			};
 			return;
 
 		case "note-update": {
 			const af = app.vault.getAbstractFileByPath(a.path);
 			if (!af) {
 				await createOrOverwrite(app, a.path, a.text);
-				state.notes[a.path] = { lastSyncedHash: simpleHash(a.text) };
+				state.notes[a.path] = {
+					baseBlocks: normalizeBlocks(a.remoteBlocks),
+					lastSyncedManagedHash: hashBlocks(a.remoteBlocks)
+				};
 				return;
 			}
 			if (!(af instanceof TFile)) return;
@@ -336,33 +365,16 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 			const curHash = simpleHash(current);
 			const newHash = simpleHash(a.text);
 
-			if (curHash === newHash) {
-				// still update lastSyncedHash (keeps future conflict logic sane)
-				state.notes[a.path] = { lastSyncedHash: newHash };
-				return;
+			if (curHash !== newHash) {
+				await app.vault.modify(af, a.text);
 			}
 
-			await app.vault.modify(af, a.text);
-			state.notes[a.path] = { lastSyncedHash: newHash };
-			return;
-		}
+			// Always refresh base blocks (remote-managed base) even if file didn't change.
+			state.notes[a.path] = {
+				baseBlocks: normalizeBlocks(a.remoteBlocks),
+				lastSyncedManagedHash: hashBlocks(a.remoteBlocks)
+			};
 
-		case "note-conflict-keep-both": {
-			const af = app.vault.getAbstractFileByPath(a.path);
-			if (!af || !(af instanceof TFile)) {
-				// if missing, just create it
-				await createOrOverwrite(app, a.path, a.remoteText);
-				state.notes[a.path] = { lastSyncedHash: simpleHash(a.remoteText) };
-				return;
-			}
-
-			const localText = await app.vault.read(af);
-			const stamped = uniqueTwinPath(app, a.path);
-			await safeCreateText(app, stamped, markTwin(localText));
-
-			await app.vault.modify(af, a.remoteText);
-
-			state.notes[a.path] = { lastSyncedHash: simpleHash(a.remoteText) };
 			return;
 		}
 	}
@@ -377,7 +389,6 @@ function shouldDownload(state: SyncState, destPath: string, timemodified?: numbe
 	if (timemodified && prev.timemodified && timemodified > prev.timemodified) return true;
 	if (filesize && prev.filesize && filesize !== prev.filesize) return true;
 
-	// if file is missing in vault, download
 	if (app) {
 		const existing = app.vault.getAbstractFileByPath(destPath);
 		if (!existing) return true;
@@ -410,10 +421,8 @@ async function writeBinary(app: App, path: string, data: ArrayBuffer) {
 	}
 }
 
-function renderCourseIndex(courseName: string, courseId: string, sections: MoodleSection[]): string {
+function renderCourseIndexManaged(courseName: string, courseId: string, sections: MoodleSection[]): { text: string; blocks: Record<string, string> } {
 	const lines: string[] = [];
-	lines.push(`# ${courseName}`);
-	lines.push("");
 	lines.push(`- Moodle course id: \`${courseId}\``);
 	lines.push("");
 	for (const s of sections ?? []) {
@@ -424,37 +433,37 @@ function renderCourseIndex(courseName: string, courseId: string, sections: Moodl
 		}
 		lines.push("");
 	}
-	return lines.join("\n");
+	const indexInner = lines.join("\n").replace(/\s+$/, "");
+
+	let note = `# ${courseName}\n\n`;
+	note = upsertBlock(note, "index", indexInner);
+	note = ensureUserSection(note);
+
+	return { text: note, blocks: { index: indexInner } };
 }
 
-function renderModuleNote(section: MoodleSection, mod: MoodleModule, resourceLinks: string[]): string {
-	const md: string[] = [];
-	md.push(`# ${mod.name ?? "Untitled"}`);
-	md.push("");
-	md.push(`- Type: \`${mod.modname ?? "unknown"}\``);
-	md.push(`- Section: ${section.name ?? section.section ?? ""}`);
-	if (mod.url) md.push(`- URL: ${mod.url}`);
-	md.push("");
+function renderModuleNoteManaged(section: MoodleSection, mod: MoodleModule, resourceLinks: string[]): { text: string; blocks: Record<string, string> } {
+	const title = mod.name ?? "Untitled";
 
-	if (mod.description) {
-		md.push(`## Content (raw HTML)`);
-		md.push("");
-		md.push("```html");
-		md.push(mod.description);
-		md.push("```");
-		md.push("");
-	}
+	const metaLines: string[] = [];
+	metaLines.push(`- Type: \`${mod.modname ?? "unknown"}\``);
+	metaLines.push(`- Section: ${section.name ?? section.section ?? ""}`);
+	if (mod.url) metaLines.push(`- URL: ${mod.url}`);
+	const metaInner = metaLines.join("\n").replace(/\s+$/, "");
 
-	if (resourceLinks.length) {
-		md.push(`## Resources`);
-		md.push("");
-		md.push(resourceLinks.join("\n"));
-		md.push("");
-	}
+	const contentInner = (mod.description && mod.description.trim().length > 0)
+		? ["```html", mod.description, "```"].join("\n")
+		: "";
 
-	md.push(`---`);
-	md.push(`_Synced by Moodle Sync PoC v2_`);
-	return md.join("\n");
+	const resourcesInner = resourceLinks.join("\n").replace(/\s+$/, "");
+
+	let note = `# ${title}\n\n`;
+	note = upsertBlock(note, "meta", metaInner);
+	note = upsertBlock(note, "content", contentInner);
+	note = upsertBlock(note, "resources", resourcesInner);
+	note = ensureUserSection(note);
+
+	return { text: note, blocks: { meta: metaInner, content: contentInner, resources: resourcesInner } };
 }
 
 function dedupeEnsureFolder(actions: PlanAction[]): PlanAction[] {
@@ -475,7 +484,7 @@ function renderSummary(plan: SyncPlan, dry: boolean): string {
 	return [
 		`${head}:`,
 		`- Courses: ${s.courses}`,
-		`- Notes: ${s.notesCreate} create, ${s.notesUpdate} update, ${s.noteConflicts} conflicts (keep-both)`,
+		`- Notes: ${s.notesCreate} create, ${s.notesUpdate} update, ${s.noteConflicts} conflicts (#colition)`,
 		`- Files: ${s.filesDownload} download (${formatBytes(s.bytesToDownload)}), ${s.filesSkip} skip`,
 	].join("\n");
 }
@@ -512,33 +521,52 @@ async function createOrOverwrite(app: App, path: string, text: string) {
 	throw new Error(`${path} exists and is not a file.`);
 }
 
-function uniqueTwinPath(app: App, originalMdPath: string): string {
-	const base = originalMdPath.replace(/\.md$/i, "");
-	const stamp = new Date().toISOString().replace(/[:.]/g, "-"); // includes ms
-	let candidate = `${base}.${stamp}.md`;
-
-	let i = 1;
-	while (app.vault.getAbstractFileByPath(candidate)) {
-		candidate = `${base}.${stamp}.${i}.md`;
-		i++;
+function normalizeBlocks(blocks: Record<string, string>): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(blocks ?? {})) {
+		out[k] = (v ?? "").replace(/\s+$/, "");
 	}
-	return candidate;
+	return out;
 }
 
-async function safeCreateText(app: App, path: string, text: string) {
-	try {
-		await ensureFolder(app, parentDir(path));
-		await app.vault.create(path, text);
-	} catch (e: any) {
-		console.error("CREATE FAILED (already exists?)", path, e);
-		throw e;
-	}
+function hashBlocks(blocks: Record<string, string>): string {
+	const keys = Object.keys(blocks ?? {}).sort();
+	const joined = keys.map(k => `${k}\n${(blocks[k] ?? "").replace(/\s+$/, "")}`).join("\n\n");
+	return simpleHash(joined);
 }
 
-function markTwin(text: string): string {
-	// Put the tag at the very top so it’s easy to find/search in Obsidian.
-	// Keep a blank line after for readability.
-	const tag = "#conflict";
-	if (text.startsWith(tag)) return text;
-	return `${tag}\n\n${text}`;
+function ensureConflictTags(noteText: string): string {
+	const tagLine = "#colition #conflict";
+	const trimmed = noteText.replace(/^\s+/, "");
+	if (trimmed.startsWith("#colition") || trimmed.startsWith("#conflict")) return trimmed;
+	return `${tagLine}\n\n${trimmed}`;
+}
+
+function keepBothBlock(local: string, remote: string): string {
+	return [
+		"#colition",
+		"",
+		"### Local",
+		"```md",
+		(local ?? "").replace(/\s+$/, ""),
+		"```",
+		"",
+		"### Remote",
+		"```md",
+		(remote ?? "").replace(/\s+$/, ""),
+		"```",
+	].join("\n");
+}
+
+function mergeBlock(input: { name: string; base: string; local: string; remote: string }): { inner: string; conflicted: boolean } {
+	const B = (input.base ?? "").replace(/\s+$/, "");
+	const L = (input.local ?? "").replace(/\s+$/, "");
+	const R = (input.remote ?? "").replace(/\s+$/, "");
+
+	if (L === R) return { inner: R, conflicted: false };
+	if (L === B) return { inner: R, conflicted: false };
+	if (R === B) return { inner: L, conflicted: false };
+
+	// PoC: if both changed, keep both inside the block and mark note with #colition/#conflict.
+	return { inner: keepBothBlock(L, R), conflicted: true };
 }

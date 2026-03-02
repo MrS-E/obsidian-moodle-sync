@@ -94,7 +94,21 @@ export default class MoodleSyncPoCv2 extends Plugin {
 
 	private async loadSyncState(): Promise<SyncState> {
 		const data = (await this.loadData()) as any;
-		return (data?.syncState ?? DEFAULT_STATE) as SyncState;
+		const s = (data?.syncState ?? DEFAULT_STATE) as any;
+
+		// Migration: old schema had notes[path].lastSyncedHash
+		if (s?.notes) {
+			for (const [path, ns] of Object.entries(s.notes)) {
+				if (!ns) continue;
+				if ((ns as any).lastSyncedHash && !(ns as any).baseBlocks) {
+					(s.notes as any)[path] = { baseBlocks: {}, lastSyncedManagedHash: String((ns as any).lastSyncedHash) };
+				}
+				if (!(s.notes as any)[path].baseBlocks) (s.notes as any)[path].baseBlocks = {};
+				if (!(s.notes as any)[path].lastSyncedManagedHash) (s.notes as any)[path].lastSyncedManagedHash = "";
+			}
+		}
+
+		return s as SyncState;
 	}
 
 	private async saveSyncState(state: SyncState): Promise<void> {

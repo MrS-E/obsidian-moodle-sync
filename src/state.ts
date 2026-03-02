@@ -4,7 +4,16 @@ export interface FileState {
 }
 
 export interface NoteState {
-	lastSyncedHash: string;
+	/**
+	 * Last synced remote-managed blocks ("base" for 3-way merge).
+	 * Keys are block names like: meta, content, resources, index.
+	 */
+	baseBlocks: Record<string, string>;
+
+	/**
+	 * Optional: hash of concatenated baseBlocks to quickly detect "local unchanged since last sync".
+	 */
+	lastSyncedManagedHash: string;
 }
 
 export interface SyncState {
