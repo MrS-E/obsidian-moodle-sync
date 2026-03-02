@@ -3,6 +3,7 @@ import { MoodleClient } from "./moodleClient";
 import { SyncState } from "./state";
 import { createLimiter, formatBytes, isEmbeddableMedia, join, safeName, simpleHash } from "./util";
 import { ensureUserSection, extractBlock, upsertBlock } from "./blocks";
+import { diff3Merge } from "node-diff3";
 
 type MoodleCourse = { id: number; fullname?: string; shortname?: string };
 type MoodleSection = { id: number; name?: string; section?: number; modules?: MoodleModule[] };
@@ -563,10 +564,51 @@ function mergeBlock(input: { name: string; base: string; local: string; remote: 
 	const L = (input.local ?? "").replace(/\s+$/, "");
 	const R = (input.remote ?? "").replace(/\s+$/, "");
 
+	// Fast paths (same as before)
 	if (L === R) return { inner: R, conflicted: false };
 	if (L === B) return { inner: R, conflicted: false };
 	if (R === B) return { inner: L, conflicted: false };
 
-	// PoC: if both changed, keep both inside the block and mark note with #colition/#conflict.
+	// Diff3 expects arrays of lines
+	const baseLines = toLinesPreserveEmpty(B);
+	const localLines = toLinesPreserveEmpty(L);
+	const remoteLines = toLinesPreserveEmpty(R);
+
+	// Try auto merge; excludeFalseConflicts=true reduces spurious conflicts
+	const merged = diff3Merge(localLines, baseLines, remoteLines, true);
+
+	let out: string[] = [];
+	let hasConflict = false;
+
+	for (const part of merged) {
+		if ("ok" in part) {
+			out.push(...part.ok);
+		} else {
+			hasConflict = true;
+			// If you want "best-effort" even with conflicts:
+			// you could still append one side; but per your Option B,
+			// we treat this as unresolved and fall back to keepBothBlock.
+			break;
+		}
+	}
+
+	if (!hasConflict) {
+		const mergedText = fromLines(out).replace(/\s+$/, "");
+		return { inner: mergedText, conflicted: false };
+	}
+
+	// Unresolved conflict => keep both inside the block
 	return { inner: keepBothBlock(L, R), conflicted: true };
+}
+
+// Keep empty lines stable
+function toLinesPreserveEmpty(s: string): string[] {
+	// Split preserving trailing empty line behavior:
+	// If string ends with '\n', split will produce a last empty element. That's OK.
+	return s.length ? s.split("\n") : [""];
+}
+
+function fromLines(lines: string[]): string {
+	// Join exactly as lines
+	return lines.join("\n");
 }
