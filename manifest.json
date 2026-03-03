@@ -1,9 +1,9 @@
 {
-	"id": "moodle-sync-poc",
-	"name": "Moodle Sync PoC",
+	"id": "moodle-sync",
+	"name": "Moodle Sync",
 	"version": "0.0.1",
 	"minAppVersion": "1.5.0",
-	"description": "PoC: Sync Moodle courses/files into a vault (token-based REST WS).",
-	"author": "You",
+	"description": "Sync Moodle courses/files into a vault (token-based REST WS).",
+	"author": "Simeon Stix",
 	"isDesktopOnly": true
 }
