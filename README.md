@@ -1,90 +1,342 @@
-# Obsidian Sample Plugin
+# Obsidian Moodle Sync (PoC -> MVP)
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+> ⚠️ **Project status:** Between **Proof of Concept (PoC)** and **early MVP**.
+> Most of the codebase was *vibe coded* up to commit **`971e3361`** and is currently focused on validating architecture and sync behavior rather than production hardening.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## Overview
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+This plugin syncs **Moodle courses, content, and attachments** into an **Obsidian vault**, with:
 
-## First time developing plugins?
+* Mirrored course folder structure
+* Downloaded attachments
+* Managed note blocks for Moodle-owned content
+* Block-level 3-way merge with diff3
+* Conflict tagging and preservation of local edits
+* Dry-run planning with progress tracking
+* Incremental file sync using timestamps
 
-Quick starting guide for new plugin devs:
+The goal is to provide a safe way to:
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+* Keep Moodle content locally searchable
+* Annotate it freely in Obsidian
+* Sync updates without losing local notes
 
-## Releasing new releases
+## Current Capabilities
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+### Course Sync
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+* Fetches all enrolled courses
+* Creates:
 
-## Adding your plugin to the community plugin list
+  ```
+  <RootFolder>/
+    Course Name (courseId)/
+      _index.md
+      Module.md
+  ```
+  
+* Index note links all modules
+* One note per Moodle module
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+### Attachments & Resources
 
-## How to use
+* All Moodle files are downloaded
+* Mirrored into:
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+  ```
+  <ResourcesFolder>/
+    Course Name (courseId)/
+      ModuleName/
+        files...
+  ```
 
-## Manually installing the plugin
+* Embedded automatically if:
+	* image
+	* audio
+	* video
+* Otherwise linked normally
+* Files are only re-downloaded when:
+	* `timemodified` increased
+	* `filesize` changed
+	* file missing locally
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
 
-## Improve code quality with eslint
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
 
-## Funding URL
+### Managed Blocks (Important)
 
-You can include funding URLs where people who use your plugin can financially support it.
+Remote-managed content is wrapped in Obsidian comment markers:
 
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+```
+%% moodle:meta:begin %%
+...
+%% moodle:meta:end %%
 ```
 
-If you have multiple URLs, you can also do:
-
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+```
+%% moodle:content:begin %%
+...
+%% moodle:content:end %%
 ```
 
-## API Documentation
+```
+%% moodle:resources:begin %%
+...
+%% moodle:resources:end %%
+```
 
-See https://docs.obsidian.md
+Everything outside these blocks (especially `## My notes`) is **never touched**.
+
+This makes merges deterministic and prevents local edits from being overwritten.
+
+### Block-Level 3-Way Merge (diff3)
+
+When both:
+
+* Moodle content changed
+* AND user edited the same block locally
+
+The plugin performs a **real diff3 merge**:
+
+```
+base   = last synced remote block
+local  = current local block
+remote = new Moodle block
+```
+
+Behavior:
+
+| Case                     | Result                    |
+| ------------------------ | ------------------------- |
+| local == base            | take remote               |
+| remote == base           | keep local                |
+| both changed, no overlap | auto-merge                |
+| overlapping edits        | keep both + mark conflict |
+
+If unresolved:
+
+* The block is replaced with:
+
+```
+#colition
+
+### Local
+
+### Remote
+```
+
+* The note receives tags at top:
+
+```
+#colition #conflict
+```
+
+### Dry Run Mode
+
+You can run:
+
+* **Dry-run**
+* **Apply**
+
+Dry-run shows:
+
+* Courses count
+* Notes created/updated
+* Conflicts detected
+* Files to download (with total size)
+
+No vault modifications are made in dry-run mode.
+
+### Progress Tracking
+
+* Status bar progress indicator
+* Total planned operations
+* Download concurrency control
+* Optional sync log file
+
+## Installation (Development)
+
+1. Clone repo
+2. `npm install`
+3. `npm run build`
+4. Copy to:
+```
+<vault>/.obsidian/plugins/moodle-sync-poc/
+```
+5. Enable plugin
+6. Add Moodle base URL + token in settings
+	* Token can be created via profile-settings -> security keys
+
+
+## Implementation Overview
+
+### Architecture
+
+Core files:
+
+| File | Responsibility |
+|------|---------------|
+| `main.ts` | Plugin entry + commands |
+| `sync.ts` | Planning + applying sync |
+| `moodleClient.ts` | Moodle REST client |
+| `blocks.ts` | Managed block parsing/replacement |
+| `state.ts` | Persistent sync state |
+| `util.ts` | Helpers (hashing, path, etc.) |
+
+### Sync Model
+
+The plugin uses a **plan -> apply** architecture.
+
+1. Build a full sync plan:
+   * Note updates
+   * File downloads
+   * Folder creation
+2. Show summary
+3. Execute (if not dry-run)
+
+### State Model
+
+Each note stores:
+
+```
+
+baseBlocks: {
+meta: "...",
+content: "...",
+resources: "..."
+}
+
+```
+
+These are the last synced remote blocks and serve as the `base` in diff3.
+
+Files store:
+
+```
+timemodified
+filesize
+```
+
+### Merge Strategy
+
+* Block-level merge only.
+* Whole notes are never blindly overwritten.
+* Managed blocks are replaced or merged individually.
+* User-owned areas are untouched.
+
+## Known Problems
+
+This is still between PoC and MVP.
+
+### Security
+
+* Moodle WebToken is stored in plugin settings (plain).
+* Not using Obsidian `SecretStorage` yet.
+* Token is long-lived and powerful.
+
+### Large Syncs
+
+* Large courses can produce:
+  * Hundreds of note updates
+  * Many file downloads
+* No cancellation yet.
+* No partial sync per course.
+
+### HTML Handling
+
+* Moodle HTML is currently wrapped in:
+```
+```html
+...
+```
+
+* No Markdown conversion.
+* No DOM parsing.
+* No sanitization.
+
+### Quiz Handling (Incomplete)
+
+* Finished quizzes:
+  * HTML preserved
+  * No PDF generation yet
+  * Diffing HTML blocks may create noisy merges.
+
+
+### Block Marker Fragility
+
+If user deletes:
+
+```
+%% moodle:content:begin %%
+```
+
+Plugin will recreate it on next sync, but behavior might be surprising.
+
+### Conflict UX
+
+Currently:
+* Conflicts are auto-embedded
+* No interactive modal merge UI
+* No side-by-side diff view
+
+### Massive Refactors Missing
+
+* No unit tests
+* No integration tests
+* No typed Moodle API client schema
+* Error handling is pragmatic, not robust
+
+## Next Improvements
+
+### Move Token to SecretStorage
+
+Instead of storing token in settings:
+* Use `this.app.vault.adapter.storeSecret(...)`
+* Or Obsidian `SecretStorage` API
+
+### Smarter Merge Improvements
+
+* Normalize whitespace before diff
+* HTML-aware merge for content blocks
+* AST-based Markdown merge
+
+### Merge UI
+
+Add modal:
+* Keep Local
+* Keep Remote
+* Auto-merge preview
+* Manual edit buffer
+
+### Quiz Enhancements
+
+* Export finished quizzes to PDF
+* Store HTML separately
+* Attach PDF alongside note
+
+### Modular Sync
+
+* Sync selected course only
+* Sync selected module only
+* Skip large attachments (selectable via settings)
+
+### Background Sync / Task Queue
+
+* Cancel support
+* Resume support
+* Better progress reporting
+
+### Testing
+
+* Unit tests for:
+  * Block parsing
+  * diff3 merge logic
+  * collision detection
+* Snapshot tests for generated notes
+
+### Architecture Cleanup
+
+* Separate:
+  * Planning layer
+  * Merge layer
+  * Rendering layer
+* Introduce dependency injection for Moodle client
