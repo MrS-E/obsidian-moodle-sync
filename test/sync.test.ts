@@ -7,7 +7,7 @@ import { createFakeApp } from "./helpers/fakeVault";
 describe("sync", () => {
 	it("plans module notes and resource links", async () => {
 		const planned = await syncTest.planModule(
-			{ call: vi.fn() },
+			{ call: vi.fn() } as unknown as Parameters<typeof syncTest.planModule>[0],
 			"Moodle/_resources/Course (42)",
 			{ id: 1, name: "Week 1" },
 			{
@@ -132,6 +132,7 @@ describe("sync", () => {
 				notesUpdate: 2,
 				noteConflicts: 3,
 				filesDownload: 4,
+				filesGenerate: 6,
 				filesSkip: 5,
 				bytesToDownload: 2048
 			},

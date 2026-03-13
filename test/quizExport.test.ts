@@ -1,17 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { planQuizExports } from "../src/quizExport";
 
 describe("quiz export", () => {
 	it("exports finished attempts as html and pdf resources", async () => {
-		const client = {
-			call: vi.fn(async (method: string, args?: Record<string, unknown>) => {
+		const call: Parameters<typeof planQuizExports>[0]["call"] = async <T>(
+			method: string,
+			args?: Record<string, unknown>
+		): Promise<T> => {
 				if (method === "mod_quiz_get_user_attempts") {
 					expect(args).toMatchObject({ quizid: 9, userid: 5, status: "finished" });
 					return {
 						attempts: [
 							{ id: 17, state: "finished", timefinish: 1700000000, timestart: 1699990000, sumgrades: 8.5 }
 						]
-					};
+					} as T;
 				}
 				if (method === "mod_quiz_get_attempt_review") {
 					expect(args).toMatchObject({ attemptid: 17 });
@@ -21,11 +23,11 @@ describe("quiz export", () => {
 						questions: [
 							{ html: "<div>Question body</div>" }
 						]
-					};
+					} as T;
 				}
 				throw new Error(`Unexpected method ${method}`);
-			})
-		};
+			};
+		const client: Parameters<typeof planQuizExports>[0] = { call };
 
 		const plan = await planQuizExports(
 			client,
@@ -60,26 +62,25 @@ describe("quiz export", () => {
 	});
 
 	it("sanitizes textarea answers and ignores unfinished attempts", async () => {
-		const client = {
-			call: vi.fn(async (method: string) => {
+		const call: Parameters<typeof planQuizExports>[0]["call"] = async <T>(method: string): Promise<T> => {
 				if (method === "mod_quiz_get_user_attempts") {
 					return {
 						attempts: [
 							{ id: 11, state: "inprogress", timefinish: 0 },
 							{ id: 12, status: "finished", timefinish: 1700000000 }
 						]
-					};
+					} as T;
 				}
 				if (method === "mod_quiz_get_attempt_review") {
 					return {
 						questions: [
 							{ html: "<textarea aria-label=\"Essay answer\">Final answer</textarea>" }
 						]
-					};
+					} as T;
 				}
 				throw new Error(`Unexpected method ${method}`);
-			})
-		};
+			};
+		const client: Parameters<typeof planQuizExports>[0] = { call };
 
 		const plan = await planQuizExports(
 			client,
