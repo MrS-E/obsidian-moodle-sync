@@ -101,6 +101,7 @@ describe("main", () => {
 			convertHtmlToMarkdown: false,
 			writeLogFile: true,
 			logFilePath: "Moodle/_sync-log.md",
+			showFileInProgress: true,
 			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} },
 			suspendedRun: {
 				mode: "apply",

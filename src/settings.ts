@@ -11,6 +11,7 @@ export interface MoodleSyncSettings {
 	// v2
 	writeLogFile: boolean;     // write Moodle/_sync-log.md
 	logFilePath: string;       // default Moodle/_sync-log.md
+	showFileInProgress: boolean;
 }
 
 export const DEFAULT_SETTINGS: MoodleSyncSettings = {
@@ -22,7 +23,8 @@ export const DEFAULT_SETTINGS: MoodleSyncSettings = {
 	convertHtmlToMarkdown: false,
 
 	writeLogFile: true,
-	logFilePath: "Moodle/_sync-log.md"
+	logFilePath: "Moodle/_sync-log.md",
+	showFileInProgress: true
 };
 
 type SettingsPlugin = Plugin & {
@@ -109,6 +111,16 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.writeLogFile)
 				.onChange(async (value) => {
 					this.plugin.settings.writeLogFile = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName("Show file in progress")
+			.setDesc("Show the current file or note name in the status bar during sync.")
+			.addToggle(t => t
+				.setValue(this.plugin.settings.showFileInProgress)
+				.onChange(async (value) => {
+					this.plugin.settings.showFileInProgress = value;
 					await this.plugin.saveSettings();
 				}));
 

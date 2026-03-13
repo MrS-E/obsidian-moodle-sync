@@ -176,6 +176,19 @@ describe("sync", () => {
 			downloadBytesRemaining: 3 * 1024 * 1024 * 1024,
 			downloadSpeedBytesPerSecond: 2 * 1024 * 1024
 		})).toBe("Moodle sync: 3/10 complete | 7 remaining | 3.0 GB to download | 2.0 MB/s | 2 active downloads | 1 failed | Downloading file.pdf");
+
+		expect(syncTest.formatProgressStatus({
+			completed: 3,
+			total: 10,
+			remaining: 7,
+			activeDownloads: 2,
+			failed: 1,
+			currentAction: "Downloading file.pdf",
+			downloadBytesRemaining: 3 * 1024 * 1024 * 1024,
+			downloadSpeedBytesPerSecond: 2 * 1024 * 1024
+		}, {
+			showCurrentAction: false
+		})).toBe("Moodle sync: 3/10 complete | 7 remaining | 3.0 GB to download | 2.0 MB/s | 2 active downloads | 1 failed");
 	});
 
 	it("cancels and resumes an apply sync from a suspended checkpoint", async () => {

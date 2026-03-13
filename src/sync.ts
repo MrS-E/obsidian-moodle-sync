@@ -47,6 +47,10 @@ export interface SyncProgressSnapshot {
 	downloadSpeedBytesPerSecond?: number;
 }
 
+export interface ProgressFormatOptions {
+	showCurrentAction?: boolean;
+}
+
 export type PlanAction =
 	| { kind: "ensure-folder"; path: string }
 	| { kind: "note-create"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean }
@@ -438,7 +442,6 @@ async function applyPlan(
 			downloadSpeedBytesPerSecond
 		};
 		progress.tick(snapshot);
-		progress.setStatus(formatProgressStatus(snapshot));
 	};
 
 	const persistCheckpoint = async () => {
@@ -735,7 +738,7 @@ function renderSummary(plan: SyncPlan, dry: boolean): string {
 	].join("\n");
 }
 
-export function formatProgressStatus(snapshot: SyncProgressSnapshot): string {
+export function formatProgressStatus(snapshot: SyncProgressSnapshot, options: ProgressFormatOptions = {}): string {
 	const parts = [
 		`Moodle sync: ${snapshot.completed}/${snapshot.total} complete`,
 		`${snapshot.remaining} remaining`
@@ -752,7 +755,7 @@ export function formatProgressStatus(snapshot: SyncProgressSnapshot): string {
 	if (snapshot.failed > 0) {
 		parts.push(`${snapshot.failed} failed`);
 	}
-	if (snapshot.currentAction) {
+	if (options.showCurrentAction !== false && snapshot.currentAction) {
 		parts.push(snapshot.currentAction);
 	}
 	return parts.join(" | ");

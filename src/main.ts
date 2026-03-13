@@ -239,7 +239,9 @@ export default class MoodleSyncPoCv2 extends Plugin {
 		if (!snapshot) {
 			return;
 		}
-		this.setStatusText(formatProgressStatus(snapshot));
+		this.setStatusText(formatProgressStatus(snapshot, {
+			showCurrentAction: this.settings.showFileInProgress
+		}));
 	}
 
 	private updateQueueStatus() {
