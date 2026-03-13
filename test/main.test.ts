@@ -79,7 +79,12 @@ describe("main", () => {
 		const testPlugin = plugin as unknown as RuntimePluginHooks;
 		testPlugin.__setData({
 			baseUrl: "https://moodle.example.edu",
-			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} }
+			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} },
+			suspendedRun: {
+				mode: "apply",
+				plan: { actions: [], summary: {}, meta: {} },
+				completedActions: [0]
+			}
 		});
 
 		await plugin.loadSettings();
@@ -96,7 +101,12 @@ describe("main", () => {
 			convertHtmlToMarkdown: false,
 			writeLogFile: true,
 			logFilePath: "Moodle/_sync-log.md",
-			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} }
+			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} },
+			suspendedRun: {
+				mode: "apply",
+				plan: { actions: [], summary: {}, meta: {} },
+				completedActions: [0]
+			}
 		});
 	});
 
@@ -128,5 +138,30 @@ describe("main", () => {
 	it("formats unknown thrown values safely", () => {
 		expect(mainTest.getErrorMessage(new Error("boom"))).toBe("boom");
 		expect(mainTest.getErrorMessage("boom")).toBe("boom");
+	});
+
+	it("normalizes suspended sync runs conservatively", () => {
+		expect(mainTest.normalizeSuspendedRun({
+			mode: "apply",
+			plan: {
+				actions: [],
+				summary: {},
+				meta: {}
+			},
+			completedActions: [1, 1, -1, "oops", 3]
+		})).toEqual({
+			mode: "apply",
+			plan: {
+				actions: [],
+				summary: {},
+				meta: {}
+			},
+			completedActions: [1, 3]
+		});
+
+		expect(mainTest.normalizeSuspendedRun({
+			mode: "invalid",
+			plan: {}
+		})).toBeNull();
 	});
 });

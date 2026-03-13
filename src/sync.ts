@@ -32,11 +32,20 @@ export type SyncMode = "apply" | "dry-run";
 
 export interface SyncProgress {
 	setStatus(text: string): void;
-	tick(): void;
+	tick(snapshot?: SyncProgressSnapshot): void;
 	totalSteps: number;
 }
 
-type PlanAction =
+export interface SyncProgressSnapshot {
+	completed: number;
+	total: number;
+	remaining: number;
+	activeDownloads: number;
+	failed: number;
+	currentAction?: string;
+}
+
+export type PlanAction =
 	| { kind: "ensure-folder"; path: string }
 	| { kind: "note-create"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean }
 	| { kind: "note-update"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean; noOp?: boolean }
@@ -45,7 +54,7 @@ type PlanAction =
 	| { kind: "file-generate-pdf"; destPath: string; html: string }
 	| { kind: "file-skip"; destPath: string };
 
-interface SyncPlan {
+export interface SyncPlan {
 	mode: SyncMode;
 	actions: PlanAction[];
 	summary: {
@@ -65,6 +74,25 @@ interface SyncPlan {
 	};
 }
 
+export interface SuspendedSyncRun {
+	mode: SyncMode;
+	plan: SyncPlan;
+	completedActions: number[];
+}
+
+export interface RunSyncOptions {
+	resumeFrom?: SuspendedSyncRun | null;
+	shouldCancel?: () => boolean;
+	onCheckpoint?: (run: SuspendedSyncRun | null) => Promise<void> | void;
+}
+
+export class SyncCancelledError extends Error {
+	constructor(message = "Sync cancelled.") {
+		super(message);
+		this.name = "SyncCancelledError";
+	}
+}
+
 export async function runSyncV2(
 	app: App,
 	client: MoodleClient,
@@ -79,13 +107,17 @@ export async function runSyncV2(
 	state: SyncState,
 	saveState: (s: SyncState) => Promise<void>,
 	mode: SyncMode,
-	progress: SyncProgress
+	progress: SyncProgress,
+	options: RunSyncOptions = {}
 ) {
-	progress.setStatus("Moodle sync: planning...");
-	const plan = await buildPlan(app, client, settings, state, mode);
+	const plan = options.resumeFrom?.plan ?? await (async () => {
+		progress.setStatus("Moodle sync: planning...");
+		return await buildPlan(app, client, settings, state, mode);
+	})();
+	const effectiveMode = options.resumeFrom?.mode ?? mode;
 
 	progress.setStatus(
-		`Moodle sync: ${mode === "dry-run" ? "dry-run" : "apply"} - ` +
+		`Moodle sync: ${effectiveMode === "dry-run" ? "dry-run" : "apply"} - ` +
 		`${plan.summary.filesDownload} downloads (${formatBytes(plan.summary.bytesToDownload)}), ` +
 		`${plan.summary.notesCreate + plan.summary.notesUpdate} note writes, ` +
 		`${plan.summary.noteConflicts} conflicts`
@@ -93,14 +125,20 @@ export async function runSyncV2(
 
 	progress.totalSteps = plan.actions.length;
 
-	if (mode === "dry-run") {
+	if (effectiveMode === "dry-run") {
 		const msg = renderSummary(plan, true);
 		new Notice(msg, 8000);
 		if (settings.writeLogFile) await appendLog(app, settings.logFilePath, msg);
+		await options.onCheckpoint?.(null);
 		return;
 	}
 
-	await applyPlan(app, client, settings, state, saveState, plan, progress);
+	await applyPlan(app, client, settings, state, saveState, plan, progress, {
+		mode: effectiveMode,
+		resumeFrom: options.resumeFrom,
+		shouldCancel: options.shouldCancel,
+		onCheckpoint: options.onCheckpoint
+	});
 
 	const msg = renderSummary(plan, false);
 	new Notice(msg, 8000);
@@ -344,44 +382,149 @@ async function applyPlan(
 	state: SyncState,
 	saveState: (s: SyncState) => Promise<void>,
 	plan: SyncPlan,
-	progress: SyncProgress
+	progress: SyncProgress,
+	options: {
+		mode: SyncMode;
+		resumeFrom?: SuspendedSyncRun | null;
+		shouldCancel?: () => boolean;
+		onCheckpoint?: (run: SuspendedSyncRun | null) => Promise<void> | void;
+	}
 ) {
 	const limiter = createLimiter(Math.max(1, settings.concurrency));
-	let completed = 0;
+	const completedActions = new Set(options.resumeFrom?.completedActions ?? []);
+	let completed = completedActions.size;
+	let failed = 0;
+	let activeDownloads = 0;
+	let checkpointWrite = Promise.resolve();
+	let stateWrite = Promise.resolve();
+	const downloadPromises: Promise<void>[] = [];
+	const errors: Error[] = [];
+	let cancellationError: SyncCancelledError | null = null;
 
-	const setProgressText = () => {
-		progress.setStatus(`Moodle sync: ${completed}/${progress.totalSteps}`);
+	const updateProgress = (currentAction?: string) => {
+		const snapshot: SyncProgressSnapshot = {
+			completed,
+			total: progress.totalSteps,
+			remaining: Math.max(progress.totalSteps - completed, 0),
+			activeDownloads,
+			failed,
+			currentAction
+		};
+		progress.tick(snapshot);
+		progress.setStatus(formatProgressStatus(snapshot));
 	};
 
-	const downloadActions: Array<Extract<PlanAction, { kind: "file-download" }>> = [];
+	const persistCheckpoint = async () => {
+		checkpointWrite = checkpointWrite.then(async () => {
+			await options.onCheckpoint?.({
+				mode: options.mode,
+				plan,
+				completedActions: [...completedActions].sort((a, b) => a - b)
+			});
+		});
+		await checkpointWrite;
+	};
 
-	for (const a of plan.actions) {
-		if (a.kind === "file-download") {
-			downloadActions.push(a);
+	const persistState = async () => {
+		stateWrite = stateWrite.then(async () => {
+			await saveState(state);
+		});
+		await stateWrite;
+	};
+
+	const markCompleted = async (index: number, currentAction?: string) => {
+		if (completedActions.has(index)) {
+			return;
+		}
+		completedActions.add(index);
+		completed++;
+		await persistState();
+		updateProgress(currentAction);
+		await persistCheckpoint();
+	};
+
+	const ensureNotCancelled = () => {
+		if (options.shouldCancel?.()) {
+			throw new SyncCancelledError();
+		}
+	};
+
+	await persistCheckpoint();
+	updateProgress(options.resumeFrom ? "Resuming sync" : "Starting sync");
+
+	for (const [index, action] of plan.actions.entries()) {
+		if (completedActions.has(index)) {
 			continue;
 		}
-		if (a.kind === "file-skip") {
-			completed++; progress.tick(); setProgressText();
+
+		try {
+			ensureNotCancelled();
+		} catch (error) {
+			cancellationError = error as SyncCancelledError;
+			break;
+		}
+
+		if (action.kind === "file-download") {
+			const currentAction = describeAction(action);
+			activeDownloads++;
+			updateProgress(currentAction);
+			downloadPromises.push(limiter(async () => {
+				try {
+					ensureNotCancelled();
+					const buf = await client.downloadFile(action.fileurl);
+					await writeBinary(app, action.destPath, buf);
+					state.files[action.destPath] = { timemodified: action.timemodified, filesize: action.filesize };
+					await markCompleted(index, currentAction);
+				} catch (error) {
+					if (error instanceof SyncCancelledError) {
+						cancellationError ??= error;
+						return;
+					}
+					failed++;
+					updateProgress(currentAction);
+					errors.push(error instanceof Error ? error : new Error(String(error)));
+				} finally {
+					activeDownloads = Math.max(0, activeDownloads - 1);
+					updateProgress(currentAction);
+				}
+			}));
 			continue;
 		}
 
-		await applyNonDownloadAction(app, state, a);
-		completed++; progress.tick(); setProgressText();
+		if (action.kind === "file-skip") {
+			await markCompleted(index, describeAction(action));
+			continue;
+		}
+
+		try {
+			await applyNonDownloadAction(app, state, action);
+			await markCompleted(index, describeAction(action));
+		} catch (error) {
+			errors.push(error instanceof Error ? error : new Error(String(error)));
+			break;
+		}
 	}
 
-	await Promise.allSettled(downloadActions.map(a =>
-		limiter(async () => {
-			try {
-				const buf = await client.downloadFile(a.fileurl);
-				await writeBinary(app, a.destPath, buf);
-				state.files[a.destPath] = { timemodified: a.timemodified, filesize: a.filesize };
-			} finally {
-				completed++; progress.tick(); setProgressText();
-			}
-		})
-	));
+	await Promise.allSettled(downloadPromises);
+	await checkpointWrite;
+	await stateWrite;
+
+	if (cancellationError) {
+		updateProgress("Sync cancelled");
+		throw cancellationError;
+	}
+
+	if (errors.length > 0) {
+		updateProgress("Sync paused after errors");
+		if (errors.length === 1) {
+			throw errors[0];
+		}
+		throw new Error(`Sync failed with ${errors.length} errors. Resume the sync to retry remaining work.`);
+	}
 
 	await saveState(state);
+	await options.onCheckpoint?.(null);
+	updateProgress("Sync complete");
 }
 
 async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction) {
@@ -560,6 +703,41 @@ function renderSummary(plan: SyncPlan, dry: boolean): string {
 	].join("\n");
 }
 
+export function formatProgressStatus(snapshot: SyncProgressSnapshot): string {
+	const parts = [
+		`Moodle sync: ${snapshot.completed}/${snapshot.total} complete`,
+		`${snapshot.remaining} remaining`
+	];
+	if (snapshot.activeDownloads > 0) {
+		parts.push(`${snapshot.activeDownloads} active download${snapshot.activeDownloads === 1 ? "" : "s"}`);
+	}
+	if (snapshot.failed > 0) {
+		parts.push(`${snapshot.failed} failed`);
+	}
+	if (snapshot.currentAction) {
+		parts.push(snapshot.currentAction);
+	}
+	return parts.join(" | ");
+}
+
+function describeAction(action: PlanAction): string {
+	switch (action.kind) {
+		case "ensure-folder":
+			return `Ensuring ${action.path}`;
+		case "note-create":
+			return `Creating ${action.path}`;
+		case "note-update":
+			return `Updating ${action.path}`;
+		case "file-download":
+			return `Downloading ${action.destPath}`;
+		case "file-generate-text":
+		case "file-generate-pdf":
+			return `Generating ${action.destPath}`;
+		case "file-skip":
+			return `Skipping ${action.destPath}`;
+	}
+}
+
 async function appendLog(app: App, logPath: string, text: string) {
 	const ts = new Date().toISOString();
 	const entry = `\n## ${ts}\n\n${text}\n`;
@@ -713,6 +891,8 @@ export const __test__ = {
 	renderModuleContent,
 	dedupeEnsureFolder,
 	renderSummary,
+	formatProgressStatus,
+	describeAction,
 	appendLog,
 	normalizeBlocks,
 	hashBlocks,
