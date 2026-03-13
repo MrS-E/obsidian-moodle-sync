@@ -161,6 +161,7 @@ function buildAttemptHtml(
 		".questionflagimage{display:none !important;}",
 		"img{max-width:100%;height:auto;}",
 		"pre{white-space:pre-wrap;word-break:break-word;background:#f8f8f8;padding:12px;border-radius:6px;}",
+		".textarea-render{white-space:pre-wrap;word-break:break-word;min-height:3em;padding:12px;border:1px solid #bbb;border-radius:6px;background:#fff;}",
 		"</style>",
 		"</head>",
 		"<body>",
@@ -243,5 +244,15 @@ function escapeHtml(value: string): string {
 function sanitizeQuizHtml(html: string): string {
 	const doc = new DOMParser().parseFromString(html, "text/html");
 	doc.querySelectorAll("img.questionflagimage").forEach((el) => el.remove());
+	doc.querySelectorAll("textarea").forEach((el) => {
+		const replacement = doc.createElement("div");
+		replacement.className = "textarea-render";
+		replacement.textContent = el.textContent ?? "";
+
+		const labelledBy = el.getAttribute("aria-label")?.trim();
+		if (labelledBy) replacement.setAttribute("aria-label", labelledBy);
+
+		el.replaceWith(replacement);
+	});
 	return "<!doctype html>\n" + doc.documentElement.outerHTML;
 }
