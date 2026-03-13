@@ -1,7 +1,6 @@
 type PrintableWebview = HTMLElement & {
 	src: string;
 	printToPDF(options: Record<string, unknown>): Promise<Uint8Array | ArrayBuffer>;
-	executeJavaScript<T>(code: string, userGesture?: boolean): Promise<T>;
 	addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
 	removeEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void;
 };
@@ -12,21 +11,21 @@ export async function renderPdfFromHtml(html: string): Promise<ArrayBuffer> {
 		throw new Error("Electron webview.printToPDF is not available in this Obsidian build.");
 	}
 
-	const objectUrl = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+	const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 	webview.style.position = "fixed";
 	webview.style.width = "1024px";
 	webview.style.height = "1440px";
 	webview.style.left = "-10000px";
 	webview.style.top = "0";
-	webview.src = objectUrl;
+	webview.src = dataUrl;
 
 	document.body.appendChild(webview);
 
 	try {
-		await waitForLoad(webview);
-		await waitForRenderStability(webview);
+		await withTimeout(waitForLoad(webview), 15000, "Timed out while loading quiz HTML into Chromium PDF renderer.");
+		await delay(500);
 
-		const pdf = await webview.printToPDF({
+		const pdf = await withTimeout(webview.printToPDF({
 			printBackground: true,
 			preferCSSPageSize: true,
 			pageSize: "A4",
@@ -36,13 +35,12 @@ export async function renderPdfFromHtml(html: string): Promise<ArrayBuffer> {
 				left: 0.4,
 				right: 0.4
 			}
-		});
+		}), 20000, "Timed out while printing quiz HTML to PDF.");
 
 		if (pdf instanceof ArrayBuffer) return pdf;
 		return pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength);
 	} finally {
 		webview.remove();
-		URL.revokeObjectURL(objectUrl);
 	}
 }
 
@@ -75,30 +73,22 @@ function waitForLoad(webview: PrintableWebview): Promise<void> {
 	});
 }
 
-async function waitForRenderStability(webview: PrintableWebview): Promise<void> {
-	await webview.executeJavaScript(`
-		(async () => {
-			const images = Array.from(document.images || []);
-			await Promise.all(images.map((img) => {
-				if (img.complete) return Promise.resolve();
-				return new Promise((resolve) => {
-					const done = () => resolve();
-					img.addEventListener("load", done, { once: true });
-					img.addEventListener("error", done, { once: true });
-					setTimeout(done, 5000);
-				});
-			}));
-
-			if (document.fonts?.ready) {
-				try {
-					await document.fonts.ready;
-				} catch {
-					// Ignore font readiness failures and continue printing.
-				}
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+	return await new Promise<T>((resolve, reject) => {
+		const timer = window.setTimeout(() => reject(new Error(message)), ms);
+		promise.then(
+			(value) => {
+				window.clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				window.clearTimeout(timer);
+				reject(error);
 			}
+		);
+	});
+}
 
-			await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-			return true;
-		})()
-	`, true);
+async function delay(ms: number): Promise<void> {
+	await new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
