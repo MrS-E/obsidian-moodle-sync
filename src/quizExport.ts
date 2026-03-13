@@ -26,6 +26,7 @@ interface MoodleClientLike {
 }
 
 type QuizAttempt = Record<string, unknown>;
+type StringableValue = string | number | boolean | bigint;
 
 export async function planQuizExports(
 	client: MoodleClientLike,
@@ -118,7 +119,7 @@ function normalizeAttempts(response: Record<string, unknown> | QuizAttempt[]): Q
 }
 
 function isFinishedAttempt(attempt: QuizAttempt): boolean {
-	const state = String(attempt.state ?? attempt.status ?? "").toLowerCase();
+	const state = firstDefinedString(attempt.state, attempt.status).toLowerCase();
 	const timeFinish = Number(attempt.timefinish ?? 0);
 	return state.includes("finished") || state.includes("overdue") || timeFinish > 0;
 }
@@ -130,8 +131,8 @@ function buildAttemptHtml(
 ): string {
 	const title = escapeHtml(mod.name ?? `Quiz ${mod.id}`);
 	const metaLines = [
-		renderMeta("Attempt ID", String(attempt.id ?? "")),
-		renderMeta("State", String(attempt.state ?? attempt.status ?? "")),
+		renderMeta("Attempt ID", firstDefinedString(attempt.id)),
+		renderMeta("State", firstDefinedString(attempt.state, attempt.status)),
 		renderMeta("Finished", formatTimestamp(attempt.timefinish)),
 		renderMeta("Started", formatTimestamp(attempt.timestart)),
 		renderMeta("Grade", firstDefinedString(attempt.sumgrades, review.grade, review.sumgrades)),
@@ -219,9 +220,16 @@ function firstHtmlString(...values: unknown[]): string {
 
 function firstDefinedString(...values: unknown[]): string {
 	for (const value of values) {
-		if (value === undefined || value === null) continue;
-		const trimmed = String(value).trim();
+		const trimmed = toDisplayString(value);
 		if (trimmed) return trimmed;
+	}
+	return "";
+}
+
+function toDisplayString(value: unknown): string {
+	if (typeof value === "string") return value.trim();
+	if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+		return String(value satisfies StringableValue).trim();
 	}
 	return "";
 }
@@ -237,7 +245,7 @@ function escapeHtml(value: string): string {
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
-		.replace(/\"/g, "&quot;")
+		.replace(/"/g, "&quot;")
 		.replace(/'/g, "&#39;");
 }
 

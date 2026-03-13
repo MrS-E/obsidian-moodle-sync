@@ -5,8 +5,9 @@ import { DEFAULT_STATE } from "../src/state";
 import { createFakeApp } from "./helpers/fakeVault";
 
 describe("sync", () => {
-	it("plans module notes and resource links", () => {
-		const planned = syncTest.planModule(
+	it("plans module notes and resource links", async () => {
+		const planned = await syncTest.planModule(
+			{ call: vi.fn() },
 			"Moodle/_resources/Course (42)",
 			{ id: 1, name: "Week 1" },
 			{
@@ -24,6 +25,7 @@ describe("sync", () => {
 					}
 				]
 			},
+			7,
 			{ convertHtmlToMarkdown: true }
 		);
 
@@ -32,6 +34,7 @@ describe("sync", () => {
 				destPath: "Moodle/_resources/Course (42)/Slides/week1/slides.pdf"
 			})
 		]);
+		expect(planned.generatedFiles).toEqual([]);
 		expect(planned.noteText).toContain("Hello");
 		expect(planned.noteText).toContain("![[Moodle/_resources/Course (42)/Slides/week1/slides.pdf]]");
 	});

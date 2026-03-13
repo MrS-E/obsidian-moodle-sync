@@ -12,11 +12,13 @@ export async function renderPdfFromHtml(html: string): Promise<ArrayBuffer> {
 	}
 
 	const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-	webview.style.position = "fixed";
-	webview.style.width = "1024px";
-	webview.style.height = "1440px";
-	webview.style.left = "-10000px";
-	webview.style.top = "0";
+	webview.setCssProps({
+		position: "fixed",
+		width: "1024px",
+		height: "1440px",
+		left: "-10000px",
+		top: "0"
+	});
 	webview.src = dataUrl;
 
 	document.body.appendChild(webview);
@@ -83,7 +85,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
 			},
 			(error) => {
 				window.clearTimeout(timer);
-				reject(error);
+				reject(error instanceof Error ? error : new Error(String(error)));
 			}
 		);
 	});
