@@ -5,11 +5,14 @@ import { createLimiter, formatBytes, isEmbeddableMedia, join, safeName, simpleHa
 import { ensureUserSection, extractBlock, upsertBlock } from "./blocks";
 import { diff3Merge } from "node-diff3";
 import { convertHtmlToMarkdown } from "./htmlToMarkdown";
+import { planQuizExports } from "./quizExport";
+import { renderPdfFromHtml } from "./pdf";
 
 type MoodleCourse = { id: number; fullname?: string; shortname?: string };
 type MoodleSection = { id: number; name?: string; section?: number; modules?: MoodleModule[] };
 type MoodleModule = {
 	id: number;
+	instance?: number;
 	name?: string;
 	modname?: string;
 	url?: string;
@@ -38,6 +41,8 @@ type PlanAction =
 	| { kind: "note-create"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean }
 	| { kind: "note-update"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean; noOp?: boolean }
 	| { kind: "file-download"; destPath: string; fileurl: string; timemodified?: number; filesize?: number }
+	| { kind: "file-generate-text"; destPath: string; text: string }
+	| { kind: "file-generate-pdf"; destPath: string; html: string }
 	| { kind: "file-skip"; destPath: string };
 
 interface SyncPlan {
@@ -49,6 +54,7 @@ interface SyncPlan {
 		notesUpdate: number;
 		noteConflicts: number;
 		filesDownload: number;
+		filesGenerate: number;
 		filesSkip: number;
 		bytesToDownload: number;
 	};
@@ -132,7 +138,7 @@ async function buildPlan(
 	const courses = await client.call<MoodleCourse[]>("core_enrol_get_users_courses", { userid: userId });
 
 	let notesCreate = 0, notesUpdate = 0, noteConflicts = 0;
-	let filesDownload = 0, filesSkip = 0, bytesToDownload = 0;
+	let filesDownload = 0, filesGenerate = 0, filesSkip = 0, bytesToDownload = 0;
 
 	for (const course of courses) {
 		const courseId = String(course.id);
@@ -167,7 +173,14 @@ async function buildPlan(
 				const modName = safeName(mod.name ?? `${mod.modname ?? "module"}-${mod.id}`);
 				const modNotePath = join(courseFolder, `${modName}.md`);
 
-				const { noteText, remoteBlocks, files } = planModule(courseResFolder, section, mod, htmlOptions);
+				const { noteText, remoteBlocks, files, generatedFiles } = await planModule(
+					client,
+					courseResFolder,
+					section,
+					mod,
+					userId,
+					htmlOptions
+				);
 
 				const noteDecision = await planNoteMergeBlocks(app, state, modNotePath, noteText, remoteBlocks);
 				if (noteDecision.kind === "note-update" && noteDecision.noOp) {
@@ -192,6 +205,17 @@ async function buildPlan(
 						actions.push({ kind: "file-skip", destPath: f.destPath });
 					}
 				}
+
+				for (const f of generatedFiles) {
+					const dir = parentDir(f.destPath);
+					if (dir) actions.push({ kind: "ensure-folder", path: dir });
+					filesGenerate++;
+					if (f.format === "text") {
+						actions.push({ kind: "file-generate-text", destPath: f.destPath, text: f.text ?? "" });
+					} else {
+						actions.push({ kind: "file-generate-pdf", destPath: f.destPath, html: f.html ?? "" });
+					}
+				}
 			}
 		}
 	}
@@ -207,6 +231,7 @@ async function buildPlan(
 			notesUpdate,
 			noteConflicts,
 			filesDownload,
+			filesGenerate,
 			filesSkip,
 			bytesToDownload
 		},
@@ -268,10 +293,12 @@ async function planNoteMergeBlocks(
 	};
 }
 
-function planModule(
+async function planModule(
+	client: MoodleClient,
 	courseResFolder: string,
 	section: MoodleSection,
 	mod: MoodleModule,
+	userId: number,
 	options: { convertHtmlToMarkdown: boolean }
 ) {
 	const modName = safeName(mod.name ?? `${mod.modname ?? "module"}-${mod.id}`);
@@ -301,8 +328,11 @@ function planModule(
 		links.push(isEmbeddableMedia(filename) ? `- ![[${destPath}]]` : `- [[${destPath}]]`);
 	}
 
+	const quizExports = await planQuizExports(client, courseResFolder, mod, userId);
+	links.push(...quizExports.resourceLinks);
+
 	const rendered = renderModuleNoteManaged(section, mod, links, options);
-	return { noteText: rendered.text, remoteBlocks: rendered.blocks, files };
+	return { noteText: rendered.text, remoteBlocks: rendered.blocks, files, generatedFiles: quizExports.files };
 }
 
 /* ---------------- Apply ---------------- */
@@ -396,6 +426,14 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 
 			return;
 		}
+
+		case "file-generate-text":
+			await createOrUpdateTextFile(app, a.destPath, a.text);
+			return;
+
+		case "file-generate-pdf":
+			await writeBinary(app, a.destPath, await renderPdfFromHtml(a.html));
+			return;
 	}
 }
 
@@ -518,7 +556,7 @@ function renderSummary(plan: SyncPlan, dry: boolean): string {
 		`${head}:`,
 		`- Courses: ${s.courses}`,
 		`- Notes: ${s.notesCreate} create, ${s.notesUpdate} update, ${s.noteConflicts} conflicts (#colition)`,
-		`- Files: ${s.filesDownload} download (${formatBytes(s.bytesToDownload)}), ${s.filesSkip} skip`,
+		`- Files: ${s.filesDownload} download (${formatBytes(s.bytesToDownload)}), ${s.filesGenerate} generated, ${s.filesSkip} skip`,
 	].join("\n");
 }
 
@@ -552,6 +590,25 @@ async function createOrOverwrite(app: App, path: string, text: string) {
 	}
 
 	throw new Error(`${path} exists and is not a file.`);
+}
+
+async function createOrUpdateTextFile(app: App, path: string, text: string) {
+	const existing = app.vault.getAbstractFileByPath(path);
+
+	if (!existing) {
+		await ensureFolder(app, parentDir(path));
+		await app.vault.create(path, text);
+		return;
+	}
+
+	if (!(existing instanceof TFile)) {
+		throw new Error(`${path} exists and is not a file.`);
+	}
+
+	const current = await app.vault.read(existing);
+	if (current !== text) {
+		await app.vault.modify(existing, text);
+	}
 }
 
 function normalizeBlocks(blocks: Record<string, string>): Record<string, string> {

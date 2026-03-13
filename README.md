@@ -1,286 +1,191 @@
-# Obsidian Moodle Sync (PoC -> MVP)
+# Moodle Sync for Obsidian
 
-> ⚠️ **Project status:** Between **Proof of Concept (PoC)** and **early MVP**.
-> Most of the codebase was *vibe coded* up to commit **`971e3361`** and is currently focused on validating architecture and sync behavior rather than production hardening.
+Early MVP for syncing Moodle course content into an Obsidian vault.
 
-## Overview
+## Status
 
-This plugin syncs **Moodle courses, content, and attachments** into an **Obsidian vault**, with:
+This plugin is currently in an **early MVP** state.
 
-* Mirrored course folder structure
-* Downloaded attachments
-* Managed note blocks for Moodle-owned content
-* Block-level 3-way merge with diff3
-* Conflict tagging and preservation of local edits
-* Dry-run planning with progress tracking
-* Incremental file sync using timestamps
+What that means in practice:
 
-The goal is to provide a safe way to:
+- The core sync flow works.
+- The vault structure and note format are already opinionated.
+- Incremental sync, merge handling, and quiz export exist.
+- The plugin is still missing hardening, better UX, and broader Moodle compatibility testing.
 
-* Keep Moodle content locally searchable
-* Annotate it freely in Obsidian
-* Sync updates without losing local notes
+This is usable for real-world testing, but not yet something I would call production-ready.
 
-## Current Capabilities
+## What it does
 
-### Course Sync
+The plugin connects to Moodle via a web service token and syncs your enrolled courses into your vault.
 
-* Fetches all enrolled courses
-* Creates:
+Current behavior:
 
-  ```
-  <RootFolder>/
-    Course Name (courseId)/
-      _index.md
-      Module.md
-  ```
-  
-* Index note links all modules
-* One note per Moodle module
+- Creates one folder per course under a configurable root folder.
+- Creates an `_index.md` note per course.
+- Creates one note per Moodle module.
+- Downloads Moodle file resources into a mirrored resources folder.
+- Re-downloads files only when metadata changed or the local file is missing.
+- Preserves a user-editable notes section in synced notes.
+- Merges Moodle-managed note blocks with local edits using block-level diff3.
+- Marks unresolved conflicts instead of silently overwriting content.
+- Supports dry-run planning before applying changes.
+- Can append sync summaries to a log note.
+- Exports finished quiz attempts as `.html` and `.pdf` files and links them from the module note.
 
-### Attachments & Resources
+## Current vault layout
 
-* All Moodle files are downloaded
-* Mirrored into:
+Example structure:
 
-  ```
-  <ResourcesFolder>/
-    Course Name (courseId)/
-      ModuleName/
-        files...
-  ```
-
-* Embedded automatically if:
-	* image
-	* audio
-	* video
-* Otherwise linked normally
-* Files are only re-downloaded when:
-	* `timemodified` increased
-	* `filesize` changed
-	* file missing locally
-
-
-
-### Managed Blocks (Important)
-
-Remote-managed content is wrapped in Obsidian comment markers:
-
-```
-%% moodle:meta:begin %%
-...
-%% moodle:meta:end %%
+```text
+Moodle/
+  Databases (42)/
+    _index.md
+    Lecture 1.md
+    Quiz 1.md
+  _resources/
+    Databases (42)/
+      Lecture 1/
+        slides.pdf
+      Quiz 1/
+        attempt-17.html
+        attempt-17.pdf
 ```
 
-```
-%% moodle:content:begin %%
-...
-%% moodle:content:end %%
-```
+The exact folder names depend on your settings and Moodle course/module names.
 
-```
-%% moodle:resources:begin %%
-...
-%% moodle:resources:end %%
-```
+## Synced note model
 
-Everything outside these blocks (especially `## My notes`) is **never touched**.
+Each generated note contains Moodle-managed blocks for:
 
-This makes merges deterministic and prevents local edits from being overwritten.
+- metadata
+- content
+- resources
 
-### Block-Level 3-Way Merge (diff3)
+Everything outside those managed blocks is treated as user-owned content. The plugin also ensures a `## My notes` section exists so you have a stable place for local annotations.
 
-When both:
+When Moodle content changes, the plugin compares:
 
-* Moodle content changed
-* AND user edited the same block locally
+- the last synced remote block
+- the current local block
+- the new remote block
 
-The plugin performs a **real diff3 merge**:
+If the change can be merged safely, it updates the block automatically. If not, it keeps both versions and tags the note with conflict markers instead of dropping either side.
 
-```
-base   = last synced remote block
-local  = current local block
-remote = new Moodle block
-```
+## Quiz export
 
-Behavior:
+Current quiz handling is limited but functional:
 
-| Case                     | Result                    |
-| ------------------------ | ------------------------- |
-| local == base            | take remote               |
-| remote == base           | keep local                |
-| both changed, no overlap | auto-merge                |
-| overlapping edits        | keep both + mark conflict |
+- Only quiz modules are considered.
+- Only finished attempts are exported.
+- Each exported attempt produces:
+  - an HTML snapshot
+  - a PDF rendered from that HTML
+- Generated quiz files are linked from the module note.
 
-If unresolved:
+This feature currently targets desktop Obsidian because PDF generation depends on Electron `webview.printToPDF`.
 
-* The block is replaced with:
+## Commands
 
-```
-#colition
+The plugin currently adds these commands:
 
-### Local
+- `Test connection`
+- `Sync now (dry-run)`
+- `Sync now (apply)`
 
-### Remote
-```
+## Settings
 
-* The note receives tags at top:
+Current settings:
 
-```
-#colition #conflict
-```
+- Moodle base URL
+- Web service token
+- Root folder
+- Resources folder
+- Download concurrency
+- Convert descriptions
+- Write sync log file
+- Log file path
 
-### Dry Run Mode
+`Convert descriptions` uses the built-in HTML-to-Markdown conversion. When disabled, module descriptions are stored as raw HTML code blocks.
 
-You can run:
+## Installation for development
 
-* **Dry-run**
-* **Apply**
+1. Install dependencies:
 
-Dry-run shows:
-
-* Courses count
-* Notes created/updated
-* Conflicts detected
-* Files to download (with total size)
-
-No vault modifications are made in dry-run mode.
-
-### Progress Tracking
-
-* Status bar progress indicator
-* Total planned operations
-* Download concurrency control
-* Optional sync log file
-
-## Installation (Development)
-
-1. Clone repo
-2. `npm install`
-3. `npm run build`
-4. Copy to:
-```
-<vault>/.obsidian/plugins/moodle-sync-poc/
-```
-5. Enable plugin
-6. Add Moodle base URL + token in settings
-	* Token can be created via profile-settings -> security keys
-
-
-## Implementation Overview
-
-### Architecture
-
-Core files:
-
-| File | Responsibility |
-|------|---------------|
-| `main.ts` | Plugin entry + commands |
-| `sync.ts` | Planning + applying sync |
-| `moodleClient.ts` | Moodle REST client |
-| `blocks.ts` | Managed block parsing/replacement |
-| `state.ts` | Persistent sync state |
-| `util.ts` | Helpers (hashing, path, etc.) |
-
-### Sync Model
-
-The plugin uses a **plan -> apply** architecture.
-
-1. Build a full sync plan:
-   * Note updates
-   * File downloads
-   * Folder creation
-2. Show summary
-3. Execute (if not dry-run)
-
-### State Model
-
-Each note stores:
-
+```bash
+npm install
 ```
 
-baseBlocks: {
-meta: "...",
-content: "...",
-resources: "..."
-}
+2. Build the plugin:
 
+```bash
+npm run build
 ```
 
-These are the last synced remote blocks and serve as the `base` in diff3.
+3. Copy the plugin files into your vault:
 
-Files store:
-
-```
-timemodified
-filesize
+```text
+<Vault>/.obsidian/plugins/moodle-sync/
 ```
 
-### Merge Strategy
+Required files:
 
-* Block-level merge only.
-* Whole notes are never blindly overwritten.
-* Managed blocks are replaced or merged individually.
-* User-owned areas are untouched.
+- `main.js`
+- `manifest.json`
+- `styles.css`
 
-## Known Problems
+4. Reload Obsidian and enable **Moodle Sync** in **Settings → Community plugins**.
 
-This is still between PoC and MVP.
+## Moodle setup
 
-### Security
+You need:
 
-* Moodle WebToken is stored in plugin settings (plain).
-* Not using Obsidian `SecretStorage` yet.
-* Token is long-lived and powerful.
+- your Moodle base URL, for example `https://moodle.example.edu`
+- a valid Moodle web service token
 
-### Large Syncs
+The token must have access to the Moodle web service functions the plugin uses, including:
 
-* Large courses can produce:
-  * Hundreds of note updates
-  * Many file downloads
-* No cancellation yet.
-* No partial sync per course.
+- site info lookup
+- enrolled course lookup
+- course content lookup
+- quiz attempt lookup
+- quiz attempt review lookup
+- file downloads via Moodle URLs
 
-### HTML Handling
+Exact token setup can vary by Moodle installation and permissions.
 
-* Moodle HTML is currently wrapped in:
-```
-```html
-...
-```
+## Limitations
 
-* No Markdown conversion.
-* No DOM parsing.
-* No sanitization.
+Current known limitations:
 
-### Quiz Handling (Incomplete)
+- Desktop only.
+- Token is stored in plugin data and is not yet moved to secure storage.
+- No background sync or scheduling.
+- No selective sync by course.
+- No cancellation once a sync has started.
+- Moodle API compatibility may vary across installations and versions.
+- Quiz export focuses on finished attempts and review data only.
+- HTML-to-Markdown conversion is intentionally simple and not lossless.
+- Large courses may still result in a lot of note writes and downloads.
 
-* Finished quizzes:
-  * HTML preserved
-  * No PDF generation yet
-  * Diffing HTML blocks may create noisy merges.
+## Development
 
+Useful commands:
 
-### Block Marker Fragility
-
-If user deletes:
-
-```
-%% moodle:content:begin %%
+```bash
+npm run dev
+npm run build
+npm run lint
+npm test
 ```
 
-Plugin will recreate it on next sync, but behavior might be surprising.
+## Roadmap direction
 
-### Conflict UX
+Near-term work is still around making the MVP solid:
 
-Currently:
-* Conflicts are auto-embedded
-* No interactive modal merge UI
-* No side-by-side diff view
-
-### Massive Refactors Missing
-
-* No unit tests
-* No integration tests
-* No typed Moodle API client schema
-* Error handling is pragmatic, not robust
+- improve settings and onboarding UX
+- harden error handling for more Moodle variants
+- improve quiz export coverage and formatting
+- reduce rough edges in large syncs
+- revisit token storage and security
+- add more real-world testing across courses and Moodle instances
