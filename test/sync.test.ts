@@ -172,8 +172,10 @@ describe("sync", () => {
 			remaining: 7,
 			activeDownloads: 2,
 			failed: 1,
-			currentAction: "Downloading file.pdf"
-		})).toBe("Moodle sync: 3/10 complete | 7 remaining | 2 active downloads | 1 failed | Downloading file.pdf");
+			currentAction: "Downloading file.pdf",
+			downloadBytesRemaining: 3 * 1024 * 1024 * 1024,
+			downloadSpeedBytesPerSecond: 2 * 1024 * 1024
+		})).toBe("Moodle sync: 3/10 complete | 7 remaining | 3.0 GB to download | 2.0 MB/s | 2 active downloads | 1 failed | Downloading file.pdf");
 	});
 
 	it("cancels and resumes an apply sync from a suspended checkpoint", async () => {

@@ -43,6 +43,8 @@ export interface SyncProgressSnapshot {
 	activeDownloads: number;
 	failed: number;
 	currentAction?: string;
+	downloadBytesRemaining?: number;
+	downloadSpeedBytesPerSecond?: number;
 }
 
 export type PlanAction =
@@ -400,15 +402,40 @@ async function applyPlan(
 	const downloadPromises: Promise<void>[] = [];
 	const errors: Error[] = [];
 	let cancellationError: SyncCancelledError | null = null;
+	const remainingDownloadIndexes = new Set<number>();
+	let totalDownloadedBytes = 0;
+	let firstDownloadStartedAt = 0;
+
+	for (const [index, action] of plan.actions.entries()) {
+		if (action.kind === "file-download" && !completedActions.has(index)) {
+			remainingDownloadIndexes.add(index);
+		}
+	}
+
+	const getKnownRemainingDownloadBytes = () => {
+		let bytes = 0;
+		for (const index of remainingDownloadIndexes) {
+			const action = plan.actions[index];
+			if (action?.kind === "file-download" && typeof action.filesize === "number") {
+				bytes += action.filesize;
+			}
+		}
+		return bytes > 0 ? bytes : undefined;
+	};
 
 	const updateProgress = (currentAction?: string) => {
+		const downloadSpeedBytesPerSecond = firstDownloadStartedAt > 0 && totalDownloadedBytes > 0
+			? totalDownloadedBytes / Math.max((Date.now() - firstDownloadStartedAt) / 1000, 1)
+			: undefined;
 		const snapshot: SyncProgressSnapshot = {
 			completed,
 			total: progress.totalSteps,
 			remaining: Math.max(progress.totalSteps - completed, 0),
 			activeDownloads,
 			failed,
-			currentAction
+			currentAction,
+			downloadBytesRemaining: getKnownRemainingDownloadBytes(),
+			downloadSpeedBytesPerSecond
 		};
 		progress.tick(snapshot);
 		progress.setStatus(formatProgressStatus(snapshot));
@@ -438,6 +465,7 @@ async function applyPlan(
 		}
 		completedActions.add(index);
 		completed++;
+		remainingDownloadIndexes.delete(index);
 		await persistState();
 		updateProgress(currentAction);
 		await persistCheckpoint();
@@ -466,12 +494,16 @@ async function applyPlan(
 
 		if (action.kind === "file-download") {
 			const currentAction = describeAction(action);
+			if (firstDownloadStartedAt === 0) {
+				firstDownloadStartedAt = Date.now();
+			}
 			activeDownloads++;
 			updateProgress(currentAction);
 			downloadPromises.push(limiter(async () => {
 				try {
 					ensureNotCancelled();
 					const buf = await client.downloadFile(action.fileurl);
+					totalDownloadedBytes += buf.byteLength;
 					await writeBinary(app, action.destPath, buf);
 					state.files[action.destPath] = { timemodified: action.timemodified, filesize: action.filesize };
 					await markCompleted(index, currentAction);
@@ -708,6 +740,12 @@ export function formatProgressStatus(snapshot: SyncProgressSnapshot): string {
 		`Moodle sync: ${snapshot.completed}/${snapshot.total} complete`,
 		`${snapshot.remaining} remaining`
 	];
+	if (typeof snapshot.downloadBytesRemaining === "number") {
+		parts.push(`${formatBytes(snapshot.downloadBytesRemaining)} to download`);
+	}
+	if (typeof snapshot.downloadSpeedBytesPerSecond === "number") {
+		parts.push(`${formatBytes(snapshot.downloadSpeedBytesPerSecond)}/s`);
+	}
 	if (snapshot.activeDownloads > 0) {
 		parts.push(`${snapshot.activeDownloads} active download${snapshot.activeDownloads === 1 ? "" : "s"}`);
 	}
@@ -723,19 +761,25 @@ export function formatProgressStatus(snapshot: SyncProgressSnapshot): string {
 function describeAction(action: PlanAction): string {
 	switch (action.kind) {
 		case "ensure-folder":
-			return `Ensuring ${action.path}`;
+			return `Ensuring ${compactPathLabel(action.path)}`;
 		case "note-create":
-			return `Creating ${action.path}`;
+			return `Creating ${compactPathLabel(action.path)}`;
 		case "note-update":
-			return `Updating ${action.path}`;
+			return `Updating ${compactPathLabel(action.path)}`;
 		case "file-download":
-			return `Downloading ${action.destPath}`;
+			return `Downloading ${compactPathLabel(action.destPath)}`;
 		case "file-generate-text":
 		case "file-generate-pdf":
-			return `Generating ${action.destPath}`;
+			return `Generating ${compactPathLabel(action.destPath)}`;
 		case "file-skip":
-			return `Skipping ${action.destPath}`;
+			return `Skipping ${compactPathLabel(action.destPath)}`;
 	}
+}
+
+function compactPathLabel(path: string): string {
+	const normalized = normalizePath(path);
+	const parts = normalized.split("/").filter(Boolean);
+	return parts.at(-1) ?? normalized;
 }
 
 async function appendLog(app: App, logPath: string, text: string) {
@@ -893,6 +937,7 @@ export const __test__ = {
 	renderSummary,
 	formatProgressStatus,
 	describeAction,
+	compactPathLabel,
 	appendLog,
 	normalizeBlocks,
 	hashBlocks,
