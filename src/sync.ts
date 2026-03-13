@@ -644,3 +644,24 @@ function fromLines(lines: string[]): string {
 	// Join exactly as lines
 	return lines.join("\n");
 }
+
+export const __test__ = {
+	buildPlan,
+	planNoteMergeBlocks,
+	planModule,
+	shouldDownload,
+	parentDir,
+	renderCourseIndexManaged,
+	renderModuleNoteManaged,
+	renderModuleContent,
+	dedupeEnsureFolder,
+	renderSummary,
+	appendLog,
+	normalizeBlocks,
+	hashBlocks,
+	ensureConflictTags,
+	keepBothBlock,
+	mergeBlock,
+	toLinesPreserveEmpty,
+	fromLines
+};
