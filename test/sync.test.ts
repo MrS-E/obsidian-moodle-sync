@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { noticeLog } from "./obsidian";
-import { runSyncV2, SuspendedSyncRun, SyncCancelledError, __test__ as syncTest } from "../src/sync";
-import { DEFAULT_STATE } from "../src/state";
+import { runSyncV2, SuspendedSyncRun, SyncCancelledError, SyncProgressSnapshot, __test__ as syncTest } from "../src/sync";
+import { DEFAULT_STATE, SyncState } from "../src/state";
 import { createFakeApp } from "./helpers/fakeVault";
 
 describe("sync", () => {
@@ -224,7 +224,7 @@ describe("sync", () => {
 		const progress = {
 			totalSteps: 0,
 			setStatus: vi.fn(),
-			tick: vi.fn((snapshot) => {
+			tick: vi.fn((snapshot?: SyncProgressSnapshot) => {
 				if (snapshot?.completed === 5) {
 					cancelRequested = true;
 				}
@@ -243,7 +243,7 @@ describe("sync", () => {
 				logFilePath: "Moodle/_sync-log.md"
 			},
 			persistedState,
-			vi.fn(async (state) => {
+			vi.fn(async (state: SyncState) => {
 				persistedState = structuredClone(state);
 			}),
 			"apply",
@@ -278,7 +278,7 @@ describe("sync", () => {
 				logFilePath: "Moodle/_sync-log.md"
 			},
 			persistedState,
-			vi.fn(async (state) => {
+			vi.fn(async (state: SyncState) => {
 				persistedState = structuredClone(state);
 			}),
 			"apply",

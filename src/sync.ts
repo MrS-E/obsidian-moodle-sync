@@ -552,7 +552,8 @@ async function applyPlan(
 	if (errors.length > 0) {
 		updateProgress("Sync paused after errors");
 		if (errors.length === 1) {
-			throw errors[0];
+			const [firstError] = errors;
+			throw firstError ?? new Error("Sync failed with an unknown error.");
 		}
 		throw new Error(`Sync failed with ${errors.length} errors. Resume the sync to retry remaining work.`);
 	}

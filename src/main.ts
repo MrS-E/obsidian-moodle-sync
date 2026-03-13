@@ -176,7 +176,7 @@ export default class MoodleSyncPoCv2 extends Plugin {
 			console.error(e);
 			if (e instanceof SyncCancelledError) {
 				this.setStatusText("Moodle sync: cancelled");
-				new Notice("Sync cancelled. Use Resume sync to continue.");
+				new Notice("Sync cancelled. Use resume sync to continue.");
 			} else {
 				this.setStatusText("Moodle sync: error");
 				new Notice(`Sync failed: ${getErrorMessage(e)}`);
