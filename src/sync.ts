@@ -6,6 +6,7 @@ import { ensureUserSection, extractBlock, upsertBlock } from "./blocks";
 import { diff3Merge } from "node-diff3";
 import { convertHtmlToMarkdown } from "./htmlToMarkdown";
 import { planQuizExports } from "./quizExport";
+import { renderPdfFromHtml } from "./pdf";
 
 type MoodleCourse = { id: number; fullname?: string; shortname?: string };
 type MoodleSection = { id: number; name?: string; section?: number; modules?: MoodleModule[] };
@@ -41,7 +42,7 @@ type PlanAction =
 	| { kind: "note-update"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean; noOp?: boolean }
 	| { kind: "file-download"; destPath: string; fileurl: string; timemodified?: number; filesize?: number }
 	| { kind: "file-generate-text"; destPath: string; text: string }
-	| { kind: "file-generate-binary"; destPath: string; data: ArrayBuffer }
+	| { kind: "file-generate-pdf"; destPath: string; html: string }
 	| { kind: "file-skip"; destPath: string };
 
 interface SyncPlan {
@@ -209,7 +210,7 @@ async function buildPlan(
 					if (f.format === "text") {
 						actions.push({ kind: "file-generate-text", destPath: f.destPath, text: f.text ?? "" });
 					} else {
-						actions.push({ kind: "file-generate-binary", destPath: f.destPath, data: f.data ?? new ArrayBuffer(0) });
+						actions.push({ kind: "file-generate-pdf", destPath: f.destPath, html: f.html ?? "" });
 					}
 				}
 			}
@@ -427,8 +428,8 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 			await createOrUpdateTextFile(app, a.destPath, a.text);
 			return;
 
-		case "file-generate-binary":
-			await writeBinary(app, a.destPath, a.data);
+		case "file-generate-pdf":
+			await writeBinary(app, a.destPath, await renderPdfFromHtml(a.html));
 			return;
 	}
 }

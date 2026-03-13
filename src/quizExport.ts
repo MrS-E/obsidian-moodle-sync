@@ -1,4 +1,3 @@
-import { renderSimplePdfFromHtml } from "./pdf";
 import { join, safeName } from "./util";
 
 export interface QuizModuleLike {
@@ -12,9 +11,9 @@ export interface QuizModuleLike {
 
 export interface QuizGeneratedFile {
 	destPath: string;
-	format: "text" | "binary";
+	format: "text" | "pdf-from-html";
 	text?: string;
-	data?: ArrayBuffer;
+	html?: string;
 }
 
 export interface QuizExportPlan {
@@ -59,7 +58,7 @@ export async function planQuizExports(
 		const pdfPath = `${basePath}.pdf`;
 
 		files.push({ destPath: htmlPath, format: "text", text: html });
-		files.push({ destPath: pdfPath, format: "binary", data: renderSimplePdfFromHtml(html) });
+		files.push({ destPath: pdfPath, format: "pdf-from-html", html });
 
 		resourceLinks.push(`- ![[${pdfPath}]]`);
 		resourceLinks.push(`- [[${htmlPath}]]`);
@@ -153,11 +152,13 @@ function buildAttemptHtml(
 		"<meta charset=\"utf-8\">",
 		`<title>${title}</title>`,
 		"<style>",
+		"@page{size:A4;margin:12mm;}",
 		"body{font-family:Arial,sans-serif;line-height:1.5;margin:32px;color:#111;}",
 		"h1,h2{line-height:1.2;}",
 		".meta{margin:0 0 24px;padding:16px;background:#f4f4f4;border:1px solid #ddd;border-radius:8px;}",
 		".meta p{margin:4px 0;}",
 		".question{margin:0 0 24px;padding:16px;border:1px solid #ddd;border-radius:8px;}",
+		".questionflagimage{display:none !important;}",
 		"img{max-width:100%;height:auto;}",
 		"pre{white-space:pre-wrap;word-break:break-word;background:#f8f8f8;padding:12px;border-radius:6px;}",
 		"</style>",
