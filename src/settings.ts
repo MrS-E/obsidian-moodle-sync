@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 
 export interface MoodleSyncSettings {
 	baseUrl: string;
@@ -25,9 +25,14 @@ export const DEFAULT_SETTINGS: MoodleSyncSettings = {
 	logFilePath: "Moodle/_sync-log.md"
 };
 
+type SettingsPlugin = Plugin & {
+	settings: MoodleSyncSettings;
+	saveSettings: () => Promise<void>;
+};
+
 export class MoodleSyncSettingTab extends PluginSettingTab {
-	constructor(app: App, private plugin: { settings: MoodleSyncSettings; saveSettings: () => Promise<void> }) {
-		super(app, plugin as any);
+	constructor(app: App, private plugin: SettingsPlugin) {
+		super(app, plugin);
 	}
 
 	display(): void {
@@ -35,7 +40,7 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName("Moodle Base URL")
+			.setName("Moodle base URL")
 			.setDesc("Example: https://moodle.example.edu (no trailing slash)")
 			.addText(t => t
 				.setPlaceholder("https://moodle.example.edu")
@@ -47,9 +52,9 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Web service token")
-			.setDesc("Moodle WS token (wstoken).")
+			.setDesc("Moodle web service token (`wstoken`).")
 			.addText(t => t
-				.setPlaceholder("wstoken...")
+				.setPlaceholder("Paste your wstoken")
 				.setValue(this.plugin.settings.token)
 				.onChange(async (value) => {
 					this.plugin.settings.token = value.trim();
@@ -88,8 +93,8 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName("Convert HTML content to markdown")
-			.setDesc("Convert Moodle HTML descriptions into markdown instead of storing raw HTML blocks.")
+			.setName("Convert descriptions")
+			.setDesc("Store converted descriptions instead of raw blocks.")
 			.addToggle(t => t
 				.setValue(this.plugin.settings.convertHtmlToMarkdown)
 				.onChange(async (value) => {
@@ -109,7 +114,7 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Log file path")
-			.setDesc("Where to append logs (markdown).")
+			.setDesc("Where to append sync logs.")
 			.addText(t => t
 				.setValue(this.plugin.settings.logFilePath)
 				.onChange(async (value) => {

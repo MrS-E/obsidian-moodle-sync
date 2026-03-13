@@ -2,7 +2,7 @@ import { normalizePath } from "obsidian";
 
 export function safeName(name: string): string {
 	return (name ?? "Untitled")
-		.replace(/[\\\/:*?"<>|]/g, "—")
+		.replace(/[\\/:*?"<>|]/g, "-")
 		.replace(/\s+/g, " ")
 		.trim();
 }
@@ -52,15 +52,17 @@ export function createLimiter(max: number) {
 
 	return async function limit<T>(fn: () => Promise<T>): Promise<T> {
 		return await new Promise<T>((resolve, reject) => {
-			queue.push(async () => {
+			queue.push(() => {
+				void (async () => {
 				try {
 					resolve(await fn());
 				} catch (e) {
-					reject(e);
+					reject(e instanceof Error ? e : new Error(String(e)));
 				} finally {
 					active--;
 					runNext();
 				}
+				})();
 			});
 			runNext();
 		});
