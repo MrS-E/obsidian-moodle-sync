@@ -1,5 +1,5 @@
 import { App, Notice, TFile, TFolder, normalizePath } from "obsidian";
-import { MoodleClient } from "./moodleClient";
+import { MoodleClient, MoodleSiteInfo } from "./moodleClient";
 import { SyncState } from "./state";
 import { createLimiter, formatBytes, isEmbeddableMedia, join, safeName, simpleHash } from "./util";
 import { ensureUserSection, extractBlock, upsertBlock } from "./blocks";
@@ -81,11 +81,11 @@ export async function runSyncV2(
 	mode: SyncMode,
 	progress: SyncProgress
 ) {
-	progress.setStatus(`Moodle Sync: planning…`);
+	progress.setStatus("Moodle sync: planning...");
 	const plan = await buildPlan(app, client, settings, state, mode);
 
 	progress.setStatus(
-		`Moodle Sync: ${mode === "dry-run" ? "dry-run" : "apply"} — ` +
+		`Moodle sync: ${mode === "dry-run" ? "dry-run" : "apply"} - ` +
 		`${plan.summary.filesDownload} downloads (${formatBytes(plan.summary.bytesToDownload)}), ` +
 		`${plan.summary.notesCreate + plan.summary.notesUpdate} note writes, ` +
 		`${plan.summary.noteConflicts} conflicts`
@@ -129,8 +129,11 @@ async function buildPlan(
 	actions.push({ kind: "ensure-folder", path: settings.rootFolder });
 	actions.push({ kind: "ensure-folder", path: settings.resourcesFolder });
 
-	const site = await client.call<any>("core_webservice_get_site_info");
+	const site = await client.call<MoodleSiteInfo>("core_webservice_get_site_info");
 	const userId = site.userid;
+	if (typeof userId !== "number") {
+		throw new Error("Moodle did not return a numeric user ID.");
+	}
 
 	const courses = await client.call<MoodleCourse[]>("core_enrol_get_users_courses", { userid: userId });
 
@@ -347,7 +350,7 @@ async function applyPlan(
 	let completed = 0;
 
 	const setProgressText = () => {
-		progress.setStatus(`Moodle Sync: ${completed}/${progress.totalSteps}`);
+		progress.setStatus(`Moodle sync: ${completed}/${progress.totalSteps}`);
 	};
 
 	const downloadActions: Array<Extract<PlanAction, { kind: "file-download" }>> = [];
@@ -548,7 +551,7 @@ function dedupeEnsureFolder(actions: PlanAction[]): PlanAction[] {
 
 function renderSummary(plan: SyncPlan, dry: boolean): string {
 	const s = plan.summary;
-	const head = dry ? "Moodle Sync (dry-run) summary" : "Moodle Sync summary";
+	const head = dry ? "Moodle sync (dry-run) summary" : "Moodle sync summary";
 	return [
 		`${head}:`,
 		`- Courses: ${s.courses}`,
@@ -563,7 +566,7 @@ async function appendLog(app: App, logPath: string, text: string) {
 	const af = app.vault.getAbstractFileByPath(logPath);
 	if (!af) {
 		await ensureFolder(app, parentDir(logPath));
-		await app.vault.create(logPath, `# Moodle Sync Log\n${entry}`);
+		await app.vault.create(logPath, `# Moodle sync log\n${entry}`);
 		return;
 	}
 	if (af instanceof TFile) {
@@ -698,3 +701,24 @@ function fromLines(lines: string[]): string {
 	// Join exactly as lines
 	return lines.join("\n");
 }
+
+export const __test__ = {
+	buildPlan,
+	planNoteMergeBlocks,
+	planModule,
+	shouldDownload,
+	parentDir,
+	renderCourseIndexManaged,
+	renderModuleNoteManaged,
+	renderModuleContent,
+	dedupeEnsureFolder,
+	renderSummary,
+	appendLog,
+	normalizeBlocks,
+	hashBlocks,
+	ensureConflictTags,
+	keepBothBlock,
+	mergeBlock,
+	toLinesPreserveEmpty,
+	fromLines
+};
