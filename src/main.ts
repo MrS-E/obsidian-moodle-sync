@@ -197,3 +197,13 @@ function getErrorMessage(error: unknown): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
+
+export const __test__ = {
+	normalizeSyncState,
+	normalizeFiles,
+	normalizeNotes,
+	normalizeNoteState,
+	normalizeBaseBlocks,
+	getErrorMessage,
+	isRecord
+};
