@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { noticeLog } from "./obsidian";
-import { runSyncV2, __test__ as syncTest } from "../src/sync";
-import { DEFAULT_STATE } from "../src/state";
+import { runSyncV2, SuspendedSyncRun, SyncCancelledError, SyncProgressSnapshot, __test__ as syncTest } from "../src/sync";
+import { DEFAULT_STATE, SyncState } from "../src/state";
 import { createFakeApp } from "./helpers/fakeVault";
 
 describe("sync", () => {
@@ -163,5 +163,143 @@ describe("sync", () => {
 		const lines = syncTest.toLinesPreserveEmpty("a\nb\n");
 		expect(lines).toEqual(["a", "b", ""]);
 		expect(syncTest.fromLines(lines)).toBe("a\nb\n");
+	});
+
+	it("formats detailed progress updates", () => {
+		expect(syncTest.formatProgressStatus({
+			completed: 3,
+			total: 10,
+			remaining: 7,
+			activeDownloads: 2,
+			failed: 1,
+			currentAction: "Downloading file.pdf",
+			downloadBytesRemaining: 3 * 1024 * 1024 * 1024,
+			downloadSpeedBytesPerSecond: 2 * 1024 * 1024
+		})).toBe("Moodle sync: 3/10 complete | 7 remaining | 3.0 GB to download | 2.0 MB/s | 2 active downloads | 1 failed | Downloading file.pdf");
+
+		expect(syncTest.formatProgressStatus({
+			completed: 3,
+			total: 10,
+			remaining: 7,
+			activeDownloads: 2,
+			failed: 1,
+			currentAction: "Downloading file.pdf",
+			downloadBytesRemaining: 3 * 1024 * 1024 * 1024,
+			downloadSpeedBytesPerSecond: 2 * 1024 * 1024
+		}, {
+			showCurrentAction: false
+		})).toBe("Moodle sync: 3/10 complete | 7 remaining | 3.0 GB to download | 2.0 MB/s | 2 active downloads | 1 failed");
+	});
+
+	it("cancels and resumes an apply sync from a suspended checkpoint", async () => {
+		const app = createFakeApp();
+		const client = {
+			call: vi.fn(async (method: string) => {
+				if (method === "core_webservice_get_site_info") {
+					return { userid: 7, username: "alice", sitename: "Moodle" };
+				}
+				if (method === "core_enrol_get_users_courses") {
+					return [{ id: 42, fullname: "Databases" }];
+				}
+				if (method === "core_course_get_contents") {
+					return [{
+						id: 1,
+						name: "Week 1",
+						modules: [{
+							id: 9,
+							name: "Overview",
+							modname: "label",
+							description: "<p>Intro</p>"
+						}]
+					}];
+				}
+				throw new Error(`Unexpected method ${method}`);
+			})
+		};
+
+		let persistedState = structuredClone(DEFAULT_STATE);
+		let suspendedRun: SuspendedSyncRun | null = null;
+		let cancelRequested = false;
+
+		const progress = {
+			totalSteps: 0,
+			setStatus: vi.fn(),
+			tick: vi.fn((snapshot?: SyncProgressSnapshot) => {
+				if (snapshot?.completed === 5) {
+					cancelRequested = true;
+				}
+			})
+		};
+
+		await expect(runSyncV2(
+			app as never,
+			client as never,
+			{
+				rootFolder: "Moodle",
+				resourcesFolder: "Moodle/_resources",
+				concurrency: 2,
+				convertHtmlToMarkdown: true,
+				writeLogFile: false,
+				logFilePath: "Moodle/_sync-log.md"
+			},
+			persistedState,
+			vi.fn(async (state: SyncState) => {
+				persistedState = structuredClone(state);
+			}),
+			"apply",
+			progress,
+			{
+				shouldCancel: () => cancelRequested,
+				onCheckpoint: async (run) => {
+					suspendedRun = run;
+				}
+			}
+		)).rejects.toBeInstanceOf(SyncCancelledError);
+
+		expect(suspendedRun).not.toBeNull();
+		if (!suspendedRun) {
+			throw new Error("Expected a suspended run after cancellation.");
+		}
+		const checkpoint = suspendedRun as SuspendedSyncRun;
+		expect(checkpoint.completedActions.length).toBeGreaterThan(0);
+		expect(Object.keys(persistedState.notes)).toContain("Moodle/Databases (42)/_index.md");
+		expect(app.files.has("Moodle/Databases (42)/Overview.md")).toBe(false);
+
+		cancelRequested = false;
+		await runSyncV2(
+			app as never,
+			client as never,
+			{
+				rootFolder: "Moodle",
+				resourcesFolder: "Moodle/_resources",
+				concurrency: 2,
+				convertHtmlToMarkdown: true,
+				writeLogFile: false,
+				logFilePath: "Moodle/_sync-log.md"
+			},
+			persistedState,
+			vi.fn(async (state: SyncState) => {
+				persistedState = structuredClone(state);
+			}),
+			"apply",
+			{
+				totalSteps: 0,
+				setStatus: vi.fn(),
+				tick: vi.fn()
+			},
+			{
+				resumeFrom: checkpoint,
+				onCheckpoint: async (run) => {
+					suspendedRun = run;
+				}
+			}
+		);
+
+		expect(suspendedRun).toBeNull();
+		expect(app.files.get("Moodle/Databases (42)/Overview.md")?.text).toContain("Intro");
+		expect(Object.keys(persistedState.notes)).toEqual(expect.arrayContaining([
+			"Moodle/Databases (42)/_index.md",
+			"Moodle/Databases (42)/Overview.md"
+		]));
 	});
 });

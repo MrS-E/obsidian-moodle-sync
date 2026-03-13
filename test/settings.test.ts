@@ -23,16 +23,19 @@ describe("settings", () => {
 			"Concurrency",
 			"Convert descriptions",
 			"Write sync log file",
+			"Show file in progress",
 			"Log file path"
 		]);
 
 		await createdSettings[0]?.text?.trigger("https://moodle.example.edu/");
 		await createdSettings[4]?.slider?.trigger(7);
 		await createdSettings[5]?.toggle?.trigger(true);
+		await createdSettings[7]?.toggle?.trigger(false);
 
 		expect(plugin.settings.baseUrl).toBe("https://moodle.example.edu");
 		expect(plugin.settings.concurrency).toBe(7);
 		expect(plugin.settings.convertHtmlToMarkdown).toBe(true);
-		expect(plugin.saveSettings).toHaveBeenCalledTimes(3);
+		expect(plugin.settings.showFileInProgress).toBe(false);
+		expect(plugin.saveSettings).toHaveBeenCalledTimes(4);
 	});
 });
