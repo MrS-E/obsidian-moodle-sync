@@ -1,5 +1,4 @@
-import { convertHtmlToMarkdown } from "./htmlToMarkdown";
-import { renderSimplePdf } from "./pdf";
+import { renderSimplePdfFromHtml } from "./pdf";
 import { join, safeName } from "./util";
 
 export interface QuizModuleLike {
@@ -53,15 +52,14 @@ export async function planQuizExports(
 		if (!Number.isFinite(attemptId)) continue;
 
 		const review = await loadAttemptReview(client, attemptId);
-		const html = buildAttemptHtml(mod, attempt, review);
-		const text = convertHtmlToMarkdown(html);
+		const html = sanitizeQuizHtml(buildAttemptHtml(mod, attempt, review));
 
 		const basePath = join(modFolder, `attempt-${attemptId}`);
 		const htmlPath = `${basePath}.html`;
 		const pdfPath = `${basePath}.pdf`;
 
 		files.push({ destPath: htmlPath, format: "text", text: html });
-		files.push({ destPath: pdfPath, format: "binary", data: renderSimplePdf(text) });
+		files.push({ destPath: pdfPath, format: "binary", data: renderSimplePdfFromHtml(html) });
 
 		resourceLinks.push(`- ![[${pdfPath}]]`);
 		resourceLinks.push(`- [[${htmlPath}]]`);
@@ -239,4 +237,10 @@ function escapeHtml(value: string): string {
 		.replace(/>/g, "&gt;")
 		.replace(/\"/g, "&quot;")
 		.replace(/'/g, "&#39;");
+}
+
+function sanitizeQuizHtml(html: string): string {
+	const doc = new DOMParser().parseFromString(html, "text/html");
+	doc.querySelectorAll("img.questionflagimage").forEach((el) => el.remove());
+	return "<!doctype html>\n" + doc.documentElement.outerHTML;
 }

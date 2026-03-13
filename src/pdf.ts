@@ -37,7 +37,53 @@ function chunkLines(text: string, maxChars = 95): string[] {
 	return out;
 }
 
-export function renderSimplePdf(text: string): ArrayBuffer {
+function htmlToPlainText(html: string): string {
+	const doc = new DOMParser().parseFromString(html, "text/html");
+	const lines: string[] = [];
+
+	const pushLine = (value: string) => {
+		const trimmed = value.replace(/\s+/g, " ").trim();
+		if (trimmed) lines.push(trimmed);
+	};
+
+	const visit = (node: Node) => {
+		if (node.nodeType === Node.TEXT_NODE) {
+			pushLine(node.textContent ?? "");
+			return;
+		}
+
+		if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+		const el = node as HTMLElement;
+		const tag = el.tagName.toLowerCase();
+
+		if (tag === "script" || tag === "style") return;
+
+		if (tag === "br") {
+			lines.push("");
+			return;
+		}
+
+		if (/^h[1-6]$/.test(tag) || tag === "p" || tag === "div" || tag === "section" || tag === "article" || tag === "li") {
+			const text = el.textContent ?? "";
+			pushLine(text);
+			lines.push("");
+			return;
+		}
+
+		Array.from(el.childNodes).forEach(visit);
+	};
+
+	Array.from(doc.body.childNodes).forEach(visit);
+
+	return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+export function renderSimplePdfFromHtml(html: string): ArrayBuffer {
+	return renderSimplePdfFromText(htmlToPlainText(html));
+}
+
+export function renderSimplePdfFromText(text: string): ArrayBuffer {
 	const pageWidth = 612;
 	const pageHeight = 792;
 	const margin = 48;
