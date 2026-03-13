@@ -4,6 +4,7 @@ import { SyncState } from "./state";
 import { createLimiter, formatBytes, isEmbeddableMedia, join, safeName, simpleHash } from "./util";
 import { ensureUserSection, extractBlock, upsertBlock } from "./blocks";
 import { diff3Merge } from "node-diff3";
+import { convertHtmlToMarkdown } from "./htmlToMarkdown";
 
 type MoodleCourse = { id: number; fullname?: string; shortname?: string };
 type MoodleSection = { id: number; name?: string; section?: number; modules?: MoodleModule[] };
@@ -65,6 +66,7 @@ export async function runSyncV2(
 		rootFolder: string;
 		resourcesFolder: string;
 		concurrency: number;
+		convertHtmlToMarkdown: boolean;
 		writeLogFile: boolean;
 		logFilePath: string;
 	},
@@ -104,10 +106,18 @@ export async function runSyncV2(
 async function buildPlan(
 	app: App,
 	client: MoodleClient,
-	settings: { rootFolder: string; resourcesFolder: string; concurrency: number; writeLogFile: boolean; logFilePath: string; },
+	settings: {
+		rootFolder: string;
+		resourcesFolder: string;
+		concurrency: number;
+		convertHtmlToMarkdown: boolean;
+		writeLogFile: boolean;
+		logFilePath: string;
+	},
 	state: SyncState,
 	mode: SyncMode
 ): Promise<SyncPlan> {
+	const htmlOptions = { convertHtmlToMarkdown: settings.convertHtmlToMarkdown };
 	const actions: PlanAction[] = [];
 
 	actions.push({ kind: "ensure-folder", path: settings.rootFolder });
@@ -154,7 +164,7 @@ async function buildPlan(
 				const modName = safeName(mod.name ?? `${mod.modname ?? "module"}-${mod.id}`);
 				const modNotePath = join(courseFolder, `${modName}.md`);
 
-				const { noteText, remoteBlocks, files } = planModule(courseResFolder, section, mod);
+				const { noteText, remoteBlocks, files } = planModule(courseResFolder, section, mod, htmlOptions);
 
 				const noteDecision = await planNoteMergeBlocks(app, state, modNotePath, noteText, remoteBlocks);
 				if (noteDecision.kind === "note-update" && noteDecision.noOp) {
@@ -255,7 +265,12 @@ async function planNoteMergeBlocks(
 	};
 }
 
-function planModule(courseResFolder: string, section: MoodleSection, mod: MoodleModule) {
+function planModule(
+	courseResFolder: string,
+	section: MoodleSection,
+	mod: MoodleModule,
+	options: { convertHtmlToMarkdown: boolean }
+) {
 	const modName = safeName(mod.name ?? `${mod.modname ?? "module"}-${mod.id}`);
 	const files: Array<{
 		destPath: string;
@@ -283,7 +298,7 @@ function planModule(courseResFolder: string, section: MoodleSection, mod: Moodle
 		links.push(isEmbeddableMedia(filename) ? `- ![[${destPath}]]` : `- [[${destPath}]]`);
 	}
 
-	const rendered = renderModuleNoteManaged(section, mod, links);
+	const rendered = renderModuleNoteManaged(section, mod, links, options);
 	return { noteText: rendered.text, remoteBlocks: rendered.blocks, files };
 }
 
@@ -402,6 +417,7 @@ async function ensureFolder(app: App, folderPath: string) {
 	const f = app.vault.getAbstractFileByPath(folderPath);
 	if (!f) return app.vault.createFolder(folderPath);
 	if (!(f instanceof TFolder)) throw new Error(`${folderPath} exists but is not a folder`);
+	return;
 }
 
 function parentDir(path: string): string {
@@ -443,7 +459,12 @@ function renderCourseIndexManaged(courseName: string, courseId: string, sections
 	return { text: note, blocks: { index: indexInner } };
 }
 
-function renderModuleNoteManaged(section: MoodleSection, mod: MoodleModule, resourceLinks: string[]): { text: string; blocks: Record<string, string> } {
+function renderModuleNoteManaged(
+	section: MoodleSection,
+	mod: MoodleModule,
+	resourceLinks: string[],
+	options: { convertHtmlToMarkdown: boolean }
+): { text: string; blocks: Record<string, string> } {
 	const title = mod.name ?? "Untitled";
 
 	const metaLines: string[] = [];
@@ -453,7 +474,7 @@ function renderModuleNoteManaged(section: MoodleSection, mod: MoodleModule, reso
 	const metaInner = metaLines.join("\n").replace(/\s+$/, "");
 
 	const contentInner = (mod.description && mod.description.trim().length > 0)
-		? ["```html", mod.description, "```"].join("\n")
+		? renderModuleContent(mod.description, options)
 		: "";
 
 	const resourcesInner = resourceLinks.join("\n").replace(/\s+$/, "");
@@ -465,6 +486,14 @@ function renderModuleNoteManaged(section: MoodleSection, mod: MoodleModule, reso
 	note = ensureUserSection(note);
 
 	return { text: note, blocks: { meta: metaInner, content: contentInner, resources: resourcesInner } };
+}
+
+function renderModuleContent(html: string, options: { convertHtmlToMarkdown: boolean }): string {
+	if (!options.convertHtmlToMarkdown) {
+		return ["```html", html, "```"].join("\n");
+	}
+
+	return convertHtmlToMarkdown(html);
 }
 
 function dedupeEnsureFolder(actions: PlanAction[]): PlanAction[] {
