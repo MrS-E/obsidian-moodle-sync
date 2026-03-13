@@ -26,7 +26,7 @@ export function extractBlock(noteText: string, name: BlockName): string | null {
 	const e = escRe(blockEnd(name));
 	const re = new RegExp(`${b}\\r?\\n([\\s\\S]*?)\\r?\\n${e}`);
 	const m = noteText.match(re);
-	return m ? m[1] : null;
+	return m?.[1] ?? null;
 }
 
 /**

@@ -6,6 +6,7 @@ export interface MoodleSyncSettings {
 	rootFolder: string;
 	resourcesFolder: string;
 	concurrency: number;
+	convertHtmlToMarkdown: boolean;
 
 	// v2
 	writeLogFile: boolean;     // write Moodle/_sync-log.md
@@ -18,6 +19,7 @@ export const DEFAULT_SETTINGS: MoodleSyncSettings = {
 	rootFolder: "Moodle",
 	resourcesFolder: "Moodle/_resources",
 	concurrency: 4,
+	convertHtmlToMarkdown: false,
 
 	writeLogFile: true,
 	logFilePath: "Moodle/_sync-log.md"
@@ -82,6 +84,16 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.concurrency)
 				.onChange(async (value) => {
 					this.plugin.settings.concurrency = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName("Convert HTML content to markdown")
+			.setDesc("Convert Moodle HTML descriptions into markdown instead of storing raw HTML blocks.")
+			.addToggle(t => t
+				.setValue(this.plugin.settings.convertHtmlToMarkdown)
+				.onChange(async (value) => {
+					this.plugin.settings.convertHtmlToMarkdown = value;
 					await this.plugin.saveSettings();
 				}));
 
