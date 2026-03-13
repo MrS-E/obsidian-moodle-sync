@@ -41,6 +41,39 @@ describe("main", () => {
 		});
 	});
 
+	it("falls back to an empty sync state for invalid persisted data", () => {
+		expect(mainTest.normalizeSyncState("invalid")).toEqual({
+			files: {},
+			notes: {}
+		});
+	});
+
+	it("normalizes malformed file and note entries conservatively", () => {
+		expect(mainTest.normalizeSyncState({
+			files: {
+				"ok.bin": { timemodified: 10, filesize: 12 },
+				"bad.bin": "oops"
+			},
+			notes: {
+				"ok.md": {
+					baseBlocks: { meta: "text", bad: 1 },
+					lastSyncedManagedHash: "hash"
+				},
+				"bad.md": 42
+			}
+		})).toEqual({
+			files: {
+				"ok.bin": { timemodified: 10, filesize: 12 }
+			},
+			notes: {
+				"ok.md": {
+					baseBlocks: { meta: "text", bad: "" },
+					lastSyncedManagedHash: "hash"
+				}
+			}
+		});
+	});
+
 	it("preserves sync state when saving settings", async () => {
 		const plugin = new MoodleSyncPoCv2({} as never, manifest);
 		const testPlugin = plugin as unknown as RuntimePluginHooks;
@@ -90,5 +123,10 @@ describe("main", () => {
 				}
 			}
 		});
+	});
+
+	it("formats unknown thrown values safely", () => {
+		expect(mainTest.getErrorMessage(new Error("boom"))).toBe("boom");
+		expect(mainTest.getErrorMessage("boom")).toBe("boom");
 	});
 });

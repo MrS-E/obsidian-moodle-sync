@@ -102,4 +102,62 @@ describe("sync", () => {
 		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run) summary");
 		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Moodle sync (dry-run) summary");
 	});
+
+	it("skips downloads when file metadata is unchanged and file exists", () => {
+		const app = createFakeApp();
+		void app.vault.createBinary("Moodle/file.pdf", new Uint8Array([1]).buffer);
+
+		expect(syncTest.shouldDownload(
+			{
+				files: { "Moodle/file.pdf": { timemodified: 10, filesize: 100 } },
+				notes: {}
+			},
+			"Moodle/file.pdf",
+			10,
+			100,
+			app as never
+		)).toBe(false);
+	});
+
+	it("renders summaries and conflict tags consistently", () => {
+		const summary = syncTest.renderSummary({
+			mode: "dry-run",
+			actions: [],
+			summary: {
+				courses: 2,
+				notesCreate: 1,
+				notesUpdate: 2,
+				noteConflicts: 3,
+				filesDownload: 4,
+				filesSkip: 5,
+				bytesToDownload: 2048
+			},
+			meta: {}
+		}, true);
+
+		expect(summary).toContain("Moodle sync (dry-run) summary:");
+		expect(summary).toContain("4 download (2.0 KB)");
+		expect(syncTest.ensureConflictTags("content")).toBe("#colition #conflict\n\ncontent");
+		expect(syncTest.ensureConflictTags("#conflict\n\ncontent")).toBe("#conflict\n\ncontent");
+	});
+
+	it("deduplicates ensure-folder actions and hashes normalized blocks", () => {
+		expect(syncTest.dedupeEnsureFolder([
+			{ kind: "ensure-folder", path: "A" },
+			{ kind: "ensure-folder", path: "A" },
+			{ kind: "file-skip", destPath: "B" }
+		])).toEqual([
+			{ kind: "ensure-folder", path: "A" },
+			{ kind: "file-skip", destPath: "B" }
+		]);
+
+		expect(syncTest.normalizeBlocks({ a: "x  ", b: "y\n" })).toEqual({ a: "x", b: "y" });
+		expect(syncTest.hashBlocks({ b: "2", a: "1" })).toBe(syncTest.hashBlocks({ a: "1", b: "2" }));
+	});
+
+	it("preserves empty lines when converting to and from line arrays", () => {
+		const lines = syncTest.toLinesPreserveEmpty("a\nb\n");
+		expect(lines).toEqual(["a", "b", ""]);
+		expect(syncTest.fromLines(lines)).toBe("a\nb\n");
+	});
 });

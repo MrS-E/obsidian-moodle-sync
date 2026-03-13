@@ -34,6 +34,17 @@ describe("MoodleClient", () => {
 		await expect(client.call("test_function")).rejects.toThrow("Bad token");
 	});
 
+	it("falls back to the Moodle error code when no message is present", async () => {
+		setRequestUrlImpl(async () => ({
+			status: 200,
+			json: { errorcode: "invalidtoken" },
+			arrayBuffer: new ArrayBuffer(0)
+		}));
+
+		const client = new MoodleClient("https://moodle.example.edu", "token123");
+		await expect(client.call("test_function")).rejects.toThrow("invalidtoken");
+	});
+
 	it("downloads files with the token appended", async () => {
 		const bytes = new Uint8Array([1, 2, 3]).buffer;
 		setRequestUrlImpl(async () => ({
@@ -47,5 +58,19 @@ describe("MoodleClient", () => {
 
 		expect(result).toBe(bytes);
 		expect(requestLog[0]?.url).toContain("token=token123");
+	});
+
+	it("keeps an existing download token and throws on HTTP failures", async () => {
+		setRequestUrlImpl(async () => ({
+			status: 404,
+			json: {},
+			arrayBuffer: new ArrayBuffer(0)
+		}));
+
+		const client = new MoodleClient("https://moodle.example.edu", "token123");
+		await expect(
+			client.downloadFile("https://moodle.example.edu/pluginfile.php/1/file.pdf?token=keepme")
+		).rejects.toThrow("Download failed HTTP 404");
+		expect(requestLog[0]?.url).toContain("token=keepme");
 	});
 });

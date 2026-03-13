@@ -116,6 +116,7 @@ function renderNode(node: Node, depth: number): string {
 	const el = node as HTMLElement;
 	const tag = el.tagName.toLowerCase();
 
+	if (tag === "pre" || tag === "hr") return textFromNode(el);
 	if (tag === "ul" || tag === "ol") return renderList(el, depth);
 	if (tag === "li") return renderFlowContent(el, depth);
 	if (tag === "blockquote") {
