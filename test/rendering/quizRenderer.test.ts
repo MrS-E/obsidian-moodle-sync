@@ -28,4 +28,20 @@ describe("quiz Markdown renderer", () => {
 		expect(plan.files[0]?.text).toContain("Read carefully.");
 		expect(plan.files[0]?.text).toContain("<table>");
 	});
+
+	it("renders an explicit fallback when Moodle provides no detailed review fields", async () => {
+		const client: Pick<MoodleApi, "getFinishedQuizAttempts" | "getQuizAttemptReview"> = {
+			getFinishedQuizAttempts: async () => [{ id: 18, status: "finished" }],
+			getQuizAttemptReview: async () => ({})
+		};
+
+		const plan = await planQuizAttemptNotes(client, "Moodle/_resources/Course (42)/Quiz", {
+			id: 7,
+			instance: 9,
+			modname: "quiz"
+		}, 5);
+
+		expect(plan.files[0]?.destPath).toBe("Moodle/_resources/Course (42)/Quiz/attempt-18.md");
+		expect(plan.files[0]?.text).toContain("No detailed review content was returned by Moodle.");
+	});
 });

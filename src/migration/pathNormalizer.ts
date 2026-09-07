@@ -5,8 +5,8 @@ export interface PathSegmentCandidate {
 	fallback?: string;
 }
 
-const INVALID_SEGMENT_CHARACTERS = /\s*[\\/:*?"<>|\[\]#^]+\s*/g;
-const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/g;
+const INVALID_SEGMENT_CHARACTERS = new RegExp("\\s*[\\\\/:*?\"<>|[\\]#^]+\\s*", "g");
+const CONTROL_CHARACTERS = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}-${String.fromCharCode(159)}]`, "g");
 
 export function normalizePathSegment(value: string | undefined, fallback = "Untitled"): string {
 	const normalized = (value ?? "")

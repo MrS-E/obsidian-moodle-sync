@@ -1,4 +1,4 @@
-import { CURRENT_PATH_MIGRATION_VERSION, FileState, NoteState, SyncState } from "../domain/syncState";
+import { FileState, NoteState, SyncState } from "../domain/syncState";
 
 export { CURRENT_PATH_MIGRATION_VERSION } from "../domain/syncState";
 

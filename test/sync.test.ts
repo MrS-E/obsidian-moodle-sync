@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { noticeLog } from "./obsidian";
 import { MoodleApi } from "../src/api/moodleApi";
+import { SyncState } from "../src/domain/syncState";
 import { runSyncV2, __test__ as syncTest } from "../src/sync";
 import { DEFAULT_STATE } from "../src/state";
 import { createFakeApp } from "./helpers/fakeVault";
@@ -125,8 +126,8 @@ describe("sync", () => {
 		await app.vault.createBinary("Moodle/_resources/Math [101] (42)/Week [1]/slides [1].pdf", new ArrayBuffer(1));
 		await app.vault.create("Notes/references.md", "[[Moodle/Math [101] (42)/Week [1]|Week]]\n");
 
-		const client = createMigrationClient();
-		const state = {
+		const { client, downloadResource } = createMigrationClient();
+		const state: SyncState = {
 			...structuredClone(DEFAULT_STATE),
 			files: {
 				"Moodle/_resources/Math [101] (42)/Week [1]/slides [1].pdf": { timemodified: 10, filesize: 1 }
@@ -143,18 +144,16 @@ describe("sync", () => {
 		expect(app.files.has("Moodle/Math-101 (42)/Week-1.md")).toBe(true);
 		expect(app.files.has("Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf")).toBe(true);
 		expect(app.files.get("Notes/references.md")?.text).toBe("[[Moodle/Math-101 (42)/Week-1|Week]]\n");
-		expect(state).toMatchObject({
-			pathMigrationVersion: 1,
-			files: { "Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf": { filesize: 1 } },
-			notes: { "Moodle/Math-101 (42)/Week-1.md": expect.any(Object) }
-		});
-		expect(client.downloadResource).not.toHaveBeenCalled();
+		expect(state.pathMigrationVersion).toBe(1);
+		expect(state.files["Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf"]?.filesize).toBe(1);
+		expect(state.notes["Moodle/Math-101 (42)/Week-1.md"]).toBeDefined();
+		expect(downloadResource).not.toHaveBeenCalled();
 
 		await runSyncV2(app as never, client, syncSettings(false), state, saveState, "apply", syncProgress());
 
 		expect(app.files.has("Moodle/Math [101] (42)/Week [1].md")).toBe(false);
 		expect(app.files.get("Notes/references.md")?.text).toBe("[[Moodle/Math-101 (42)/Week-1|Week]]\n");
-		expect(client.downloadResource).not.toHaveBeenCalled();
+		expect(downloadResource).not.toHaveBeenCalled();
 	});
 
 	it("skips downloads when file metadata is unchanged and file exists", () => {
@@ -221,8 +220,9 @@ describe("sync", () => {
 	});
 });
 
-function createMigrationClient(): MoodleApi {
-	return {
+function createMigrationClient(): { client: MoodleApi; downloadResource: ReturnType<typeof vi.fn> } {
+	const downloadResource = vi.fn(async () => new ArrayBuffer(0));
+	return { client: {
 		getSiteInfo: vi.fn(async () => ({ userid: 7 })),
 		getEnrolledCourses: vi.fn(async () => [{ id: 42, fullname: "Math [101]" }]),
 		getCourseContents: vi.fn(async () => [{
@@ -244,8 +244,8 @@ function createMigrationClient(): MoodleApi {
 		}]),
 		getFinishedQuizAttempts: vi.fn(async () => []),
 		getQuizAttemptReview: vi.fn(async () => ({})),
-		downloadResource: vi.fn(async () => new ArrayBuffer(0))
-	};
+		downloadResource
+	}, downloadResource };
 }
 
 function syncSettings(writeLogFile: boolean) {

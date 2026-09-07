@@ -11,7 +11,7 @@ describe("note merge actor", () => {
 			vault: {
 				getAbstractFileByPath: vi.fn(() => file),
 				read: vi.fn(async () => text),
-				modify: vi.fn(async (_file, value) => { text = value; }),
+				modify: vi.fn(async (_file: TFile, value: string) => { text = value; }),
 				create: vi.fn()
 			}
 		};

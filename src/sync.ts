@@ -1,6 +1,6 @@
 import { App, Notice, TFile, TFolder, normalizePath } from "obsidian";
 import { MoodleApi } from "./api/moodleApi";
-import { CourseModule, CourseSection, isFileContent } from "./domain/models";
+import { CourseModule, CourseSection } from "./domain/models";
 import { SyncState } from "./domain/syncState";
 import { createLimiter, formatBytes, isEmbeddableMedia, join, simpleHash } from "./util";
 import { createManagedPathLayout, ManagedModulePath, ManagedResourcePath } from "./migration/managedPaths";
@@ -546,23 +546,6 @@ async function appendLog(app: App, logPath: string, text: string) {
 		const cur = await app.vault.read(af);
 		await app.vault.modify(af, cur + entry);
 	}
-}
-
-async function createOrOverwrite(app: App, path: string, text: string) {
-	const existing = app.vault.getAbstractFileByPath(path);
-
-	if (!existing) {
-		await ensureFolder(app, parentDir(path));
-		await app.vault.create(path, text);
-		return;
-	}
-
-	if (existing instanceof TFile) {
-		await app.vault.modify(existing, text);
-		return;
-	}
-
-	throw new Error(`${path} exists and is not a file.`);
 }
 
 async function createOrUpdateTextFile(app: App, path: string, text: string) {
