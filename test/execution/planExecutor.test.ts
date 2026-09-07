@@ -21,7 +21,7 @@ describe("plan executor", () => {
 				{ kind: "resource-download", destPath: "Moodle/good.pdf", fileurl: "good", filesize: 1 },
 				{ kind: "resource-download", destPath: "Moodle/bad.pdf", fileurl: "bad", filesize: 1 }
 			],
-			summary: { courses: 0, pathMoves: 0, linksRewrite: 0, notesCreate: 0, notesUpdate: 0, noteConflicts: 0, resourcesDownload: 2, markdownGenerate: 0, resourcesSkip: 0, bytesToDownload: 2 },
+			summary: { courses: 0, pathMoves: 0, linksRewrite: 0, migrationWarnings: [], notesCreate: 0, notesUpdate: 0, noteConflicts: 0, resourcesDownload: 2, markdownGenerate: 0, resourcesSkip: 0, bytesToDownload: 2 },
 			meta: { userid: 4 }
 		};
 		const state = structuredClone(DEFAULT_SYNC_STATE);

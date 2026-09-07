@@ -17,6 +17,7 @@ export interface SyncPlanSummary {
 	courses: number;
 	pathMoves: number;
 	linksRewrite: number;
+	migrationWarnings: string[];
 	notesCreate: number;
 	notesUpdate: number;
 	noteConflicts: number;

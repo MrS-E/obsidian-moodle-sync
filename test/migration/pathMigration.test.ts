@@ -40,4 +40,15 @@ describe("path migration", () => {
 			{ from: "Moodle/Old.md", to: "Moodle/New.md", kind: "file" }
 		], (path) => path === "Moodle/Old.md" || path === "Moodle/New.md")).toThrow("already exists");
 	});
+
+	it("leaves a legacy path untouched when it has competing normalized destinations", () => {
+		const migration = createPathMigration([
+			{ from: "Moodle/Course (1)/Topic-.md", to: "Moodle/Course (1)/Topic (10).md", kind: "file" },
+			{ from: "Moodle/Course (1)/Topic-.md", to: "Moodle/Course (1)/Topic (11).md", kind: "file" }
+		], path => path === "Moodle/Course (1)/Topic-.md");
+
+		expect(migration.mappings).toEqual([]);
+		expect(migration.moves).toEqual([]);
+		expect(migration.skippedSources).toEqual(["Moodle/Course (1)/Topic-.md"]);
+	});
 });

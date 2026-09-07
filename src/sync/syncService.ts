@@ -66,6 +66,10 @@ export function renderSyncSummary(plan: SyncPlan, dryRun: boolean, failedDownloa
 		`- Files: ${summary.resourcesDownload} download (${formatBytes(summary.bytesToDownload)}), ${summary.markdownGenerate} generated, ${summary.resourcesSkip} skip`
 	];
 	if (failedDownloads > 0) lines.push(`- Failures: ${failedDownloads} download${failedDownloads === 1 ? "" : "s"}`);
+	if (summary.migrationWarnings.length > 0) {
+		lines.push(`- Migration warnings: ${summary.migrationWarnings.length} unsafe legacy path${summary.migrationWarnings.length === 1 ? "" : "s"} left unchanged`);
+		lines.push(...summary.migrationWarnings.map(path => `  - ${path}: maps to more than one normalized destination`));
+	}
 	if (reviewWarnings.length > 0) {
 		lines.push(`- Warnings: ${reviewWarnings.length} quiz review${reviewWarnings.length === 1 ? "" : "s"} unavailable`);
 		lines.push(...reviewWarnings.map(warning => `  - ${warning}`));

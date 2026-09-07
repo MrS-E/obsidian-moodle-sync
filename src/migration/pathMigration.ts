@@ -13,13 +13,14 @@ export interface ManagedPathMapping {
 export interface PathMigration {
 	mappings: ManagedPathMapping[];
 	moves: ManagedPathMapping[];
+	skippedSources: string[];
 }
 
 export function createPathMigration(
 	mappings: ManagedPathMapping[],
 	exists: (path: string) => boolean
 ): PathMigration {
-	const uniqueMappings = uniquePathMappings(mappings);
+	const { mappings: uniqueMappings, skippedSources } = uniquePathMappings(mappings);
 	assertUnambiguousTargets(uniqueMappings);
 
 	const candidates = uniqueMappings
@@ -38,7 +39,7 @@ export function createPathMigration(
 		}
 	}
 
-	return { mappings: uniqueMappings, moves };
+	return { mappings: uniqueMappings, moves, skippedSources: skippedSources.filter(exists) };
 }
 
 export function projectMigratedPath(path: string, mappings: ManagedPathMapping[]): string {
@@ -63,19 +64,24 @@ export function remapSyncState(state: SyncState, mappings: ManagedPathMapping[])
 	};
 }
 
-function uniquePathMappings(mappings: ManagedPathMapping[]): ManagedPathMapping[] {
+function uniquePathMappings(mappings: ManagedPathMapping[]): { mappings: ManagedPathMapping[]; skippedSources: string[] } {
 	const bySource = new Map<string, ManagedPathMapping>();
+	const skippedSources = new Set<string>();
 	for (const mapping of mappings) {
-		if (mapping.from === mapping.to) {
-			continue;
-		}
 		const existing = bySource.get(mapping.from);
 		if (existing && (existing.to !== mapping.to || existing.kind !== mapping.kind)) {
-			throw new Error(`Cannot migrate ${mapping.from}: it maps to more than one destination.`);
+			skippedSources.add(mapping.from);
+			continue;
 		}
 		bySource.set(mapping.from, mapping);
 	}
-	return [...bySource.values()];
+	for (const source of skippedSources) {
+		bySource.delete(source);
+	}
+	return {
+		mappings: [...bySource.values()].filter(mapping => mapping.from !== mapping.to),
+		skippedSources: [...skippedSources].sort((left, right) => left.localeCompare(right))
+	};
 }
 
 function assertUnambiguousTargets(mappings: ManagedPathMapping[]): void {

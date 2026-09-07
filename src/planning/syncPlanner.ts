@@ -33,9 +33,13 @@ export function createSyncPlan(
 	const quizzesByCourse = new Map(remote.courses.map(course => [course.course.id, course.quizAttempts]));
 	let pathMoves = 0;
 	let linksRewrite = 0;
+	let migrationWarnings: string[] = [];
+	let migrationMappings: ManagedPathMapping[] = [];
 
 	if (state.pathMigrationVersion < CURRENT_PATH_MIGRATION_VERSION) {
 		const migration = createPathMigration(layout.mappings, path => snapshot.hasPath(path));
+		migrationMappings = migration.mappings;
+		migrationWarnings = migration.skippedSources;
 		const linkActions = planLinkRewrites(snapshot, migration.mappings);
 		pathMoves = migration.moves.length;
 		linksRewrite = linkActions.reduce((total, action) => total + action.count, 0);
@@ -66,7 +70,7 @@ export function createSyncPlan(
 
 		const indexPath = join(course.folder, "_index.md");
 		const index = renderCourseIndex(course.name, String(course.course.id), course.sections, moduleNames(course.modules));
-		const indexAction = planNote(snapshot, state, indexPath, index.text, index.blocks, layout.mappings);
+		const indexAction = planNote(snapshot, state, indexPath, index.text, index.blocks, migrationMappings);
 		addNoteAction(actions, indexAction, counters => {
 			notesCreate += counters.create;
 			notesUpdate += counters.update;
@@ -74,15 +78,18 @@ export function createSyncPlan(
 		});
 
 		for (const modulePath of course.modules) {
-			const modulePlan = planModule(modulePath, quizzesByCourse.get(course.course.id)?.get(modulePath.module.id) ?? []);
+			const modulePlan = planModule(
+				modulePath,
+				quizzesByCourse.get(course.course.id)?.get(modulePath.module.id) ?? [],
+				migrationMappings
+			);
 			const noteAction = planNote(
 				snapshot,
 				state,
 				modulePath.notePath,
 				modulePlan.noteText,
 				modulePlan.remoteBlocks,
-				layout.mappings,
-				modulePath.legacyNotePath
+				migrationMappings
 			);
 			addNoteAction(actions, noteAction, counters => {
 				notesCreate += counters.create;
@@ -119,6 +126,7 @@ export function createSyncPlan(
 			courses: remote.courses.length,
 			pathMoves,
 			linksRewrite,
+			migrationWarnings,
 			notesCreate,
 			notesUpdate,
 			noteConflicts,
@@ -131,12 +139,16 @@ export function createSyncPlan(
 	};
 }
 
-function planModule(modulePath: ManagedModulePath, quizAttempts: Parameters<typeof renderQuizAttemptNotes>[2]) {
+function planModule(
+	modulePath: ManagedModulePath,
+	quizAttempts: Parameters<typeof renderQuizAttemptNotes>[2],
+	mappings: ManagedPathMapping[]
+) {
 	const resources = modulePath.resources.map(resource => {
 		const filename = resource.path.split("/").pop() ?? resource.content.filename;
 		return {
 			destPath: resource.path,
-			legacyDestPath: resource.legacyPath,
+			legacyDestPath: legacyPathFor(resource.path, mappings),
 			fileurl: resource.content.fileurl,
 			timemodified: resource.content.timemodified,
 			filesize: resource.content.filesize,
@@ -162,9 +174,9 @@ function planNote(
 	path: string,
 	text: string,
 	blocks: Record<string, string>,
-	mappings: ManagedPathMapping[],
-	legacyPath = legacyPathFor(path, mappings)
+	mappings: ManagedPathMapping[]
 ): NoteMergeAction {
+	const legacyPath = legacyPathFor(path, mappings);
 	const current = snapshot.getFile(legacyPath) ?? snapshot.getFile(path);
 	return planNoteMerge(state, path, text, blocks, current);
 }
