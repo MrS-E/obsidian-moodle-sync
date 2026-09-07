@@ -69,7 +69,7 @@ describe("sync service", () => {
 
 		expect(state.files).toEqual({});
 		expect(result.summary).toContain("Failures: 1 download");
-		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("### Errors");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("<h3>Errors</h3>");
 		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("offline");
 	});
 
@@ -87,9 +87,10 @@ describe("sync service", () => {
 		expect(log).toContain("Previous entry");
 		expect(log).toContain("Moodle sync (dry-run) summary:");
 		expect(log).toContain("Moodle sync summary:");
-		expect(log).toContain("### Planned actions");
-		expect(log).toContain("- Ensure folder: Moodle");
-		expect(log).toContain("- Download resource: Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf");
+		expect(log).toContain("<h3>Planned actions</h3>");
+		expect(log).toContain("<li>Ensure folder: Moodle</li>");
+		expect(log).toContain("<li>Download resource: Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf</li>");
+		expect(log).not.toContain("### Planned actions");
 		expect(log.match(/<details>/g)).toHaveLength(2);
 		expect(log.match(/<\/details>/g)).toHaveLength(2);
 	});

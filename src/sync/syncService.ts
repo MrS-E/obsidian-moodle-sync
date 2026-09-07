@@ -105,15 +105,31 @@ export function renderSyncLogDetails(
 	failedDownloads: Array<{ path: string; error: Error }>
 ): string {
 	const sections = [
-		summary,
-		"### Planned actions\n\n" + plan.actions.map(describeAction).join("\n")
+		renderHtmlSection("Summary", summary.split("\n").slice(1), summary.split("\n")[0]),
+		renderHtmlSection("Planned actions", plan.actions.map(describeAction))
 	];
 	if (failedDownloads.length > 0) {
-		sections.push("### Errors\n\n" + failedDownloads
-			.map(({ path, error }) => `- ${path}: ${error.message}`)
-			.join("\n"));
+		sections.push(renderHtmlSection("Errors", failedDownloads
+			.map(({ path, error }) => `${path}: ${error.message}`)));
 	}
 	return sections.join("\n\n");
+}
+
+function renderHtmlSection(title: string, items: string[], introduction?: string): string {
+	const content = items.length > 0
+		? `<ul>\n${items.map(item => `<li>${escapeHtml(item.replace(/^\s*-\s*/, ""))}</li>`).join("\n")}\n</ul>`
+		: "<p>No items.</p>";
+	return `<section>\n<h3>${escapeHtml(title)}</h3>${introduction ? `\n<p>${escapeHtml(introduction)}</p>` : ""}\n${content}\n</section>`;
+}
+
+function escapeHtml(value: string): string {
+	return value.replace(/[&<>"']/g, character => ({
+		"&": "&amp;",
+		"<": "&lt;",
+		">": "&gt;",
+		"\"": "&quot;",
+		"'": "&#39;"
+	})[character] ?? character);
 }
 
 function collectQuizReviewWarnings(remote: RemoteSyncData): string[] {
@@ -126,22 +142,22 @@ function collectQuizReviewWarnings(remote: RemoteSyncData): string[] {
 function describeAction(action: SyncPlan["actions"][number]): string {
 	switch (action.kind) {
 		case "path-move":
-			return `- Move ${action.pathKind}: ${action.from} → ${action.to}`;
+			return `Move ${action.pathKind}: ${action.from} → ${action.to}`;
 		case "links-rewrite":
-			return `- Rewrite ${action.count} link${action.count === 1 ? "" : "s"}: ${action.path}`;
+			return `Rewrite ${action.count} link${action.count === 1 ? "" : "s"}: ${action.path}`;
 		case "state-remap":
-			return `- Update sync-state migration to version ${action.migrationVersion}`;
+			return `Update sync-state migration to version ${action.migrationVersion}`;
 		case "ensure-folder":
-			return `- Ensure folder: ${action.path}`;
+			return `Ensure folder: ${action.path}`;
 		case "note-merge":
 			return action.noOp
-				? `- Keep note: ${action.path}`
-				: `- ${action.operation === "create" ? "Create" : "Update"} note: ${action.path}${action.conflicted ? " (conflict)" : ""}`;
+				? `Keep note: ${action.path}`
+				: `${action.operation === "create" ? "Create" : "Update"} note: ${action.path}${action.conflicted ? " (conflict)" : ""}`;
 		case "resource-download":
-			return `- Download resource: ${action.destPath}`;
+			return `Download resource: ${action.destPath}`;
 		case "resource-skip":
-			return `- Keep resource: ${action.destPath}`;
+			return `Keep resource: ${action.destPath}`;
 		case "markdown-generate":
-			return `- Generate Markdown: ${action.destPath}`;
+			return `Generate Markdown: ${action.destPath}`;
 	}
 }
