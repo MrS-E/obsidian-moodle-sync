@@ -1,17 +1,12 @@
 import { Notice, Plugin } from "obsidian";
 import { MoodleSyncSettingTab, DEFAULT_SETTINGS, MoodleSyncSettings } from "./settings";
-import { MoodleClient, MoodleSiteInfo } from "./moodleClient";
-import { DEFAULT_STATE, NoteState, SyncState } from "./state";
+import { MoodleApi, MoodleWebServiceApi } from "./api/moodleApi";
+import { MoodleRestTransport } from "./api/moodleTransport";
+import { decodeSyncState, encodeSyncState, SyncState } from "./domain/syncState";
 import { runSyncV2, SyncMode, SyncProgress } from "./sync";
 
 interface PersistedPluginData extends Partial<MoodleSyncSettings> {
 	syncState?: unknown;
-}
-
-interface LegacyNoteState {
-	lastSyncedHash?: unknown;
-	baseBlocks?: unknown;
-	lastSyncedManagedHash?: unknown;
 }
 
 export default class MoodleSyncPoCv2 extends Plugin {
@@ -30,8 +25,8 @@ export default class MoodleSyncPoCv2 extends Plugin {
 			name: "Test connection",
 			callback: async () => {
 				try {
-					const client = this.makeClientOrThrow();
-					const site = await client.call<MoodleSiteInfo>("core_webservice_get_site_info");
+					const client = this.makeApiOrThrow();
+					const site = await client.getSiteInfo();
 					new Notice(`OK: ${site.sitename ?? "Moodle"} / ${site.username ?? site.userid}`);
 				} catch (e: unknown) {
 					console.error(e);
@@ -57,16 +52,16 @@ export default class MoodleSyncPoCv2 extends Plugin {
 		if (this.statusEl) this.statusEl.setText("Moodle sync: unloaded");
 	}
 
-	private makeClientOrThrow(): MoodleClient {
+	private makeApiOrThrow(): MoodleApi {
 		if (!this.settings.baseUrl || !this.settings.token) {
 			throw new Error("Set base URL + token in plugin settings first.");
 		}
-		return new MoodleClient(this.settings.baseUrl, this.settings.token);
+		return new MoodleWebServiceApi(new MoodleRestTransport(this.settings.baseUrl, this.settings.token));
 	}
 
 	private async run(mode: SyncMode) {
 		try {
-			const client = this.makeClientOrThrow();
+			const client = this.makeApiOrThrow();
 			const state = await this.loadSyncState();
 
 			const progress: SyncProgress = {
@@ -109,14 +104,14 @@ export default class MoodleSyncPoCv2 extends Plugin {
 
 	private async loadSyncState(): Promise<SyncState> {
 		const data = await this.loadPluginData();
-		return normalizeSyncState(data.syncState);
+		return decodeSyncState(data.syncState);
 	}
 
 	private async saveSyncState(state: SyncState): Promise<void> {
 		const data = await this.loadPluginData();
 		await this.saveData({
 			...data,
-			syncState: state
+			syncState: encodeSyncState(state)
 		});
 	}
 
@@ -124,70 +119,6 @@ export default class MoodleSyncPoCv2 extends Plugin {
 		const data: unknown = await this.loadData();
 		return isRecord(data) ? data : {};
 	}
-}
-
-function normalizeSyncState(value: unknown): SyncState {
-	if (!isRecord(value)) {
-		return structuredClone(DEFAULT_STATE);
-	}
-
-	const files = isRecord(value.files) ? normalizeFiles(value.files) : {};
-	const notes = isRecord(value.notes) ? normalizeNotes(value.notes) : {};
-
-	return { files, notes };
-}
-
-function normalizeFiles(value: Record<string, unknown>): SyncState["files"] {
-	const files: SyncState["files"] = {};
-	for (const [path, entry] of Object.entries(value)) {
-		if (!isRecord(entry)) {
-			continue;
-		}
-
-		files[path] = {
-			timemodified: typeof entry.timemodified === "number" ? entry.timemodified : undefined,
-			filesize: typeof entry.filesize === "number" ? entry.filesize : undefined
-		};
-	}
-	return files;
-}
-
-function normalizeNotes(value: Record<string, unknown>): SyncState["notes"] {
-	const notes: SyncState["notes"] = {};
-	for (const [path, entry] of Object.entries(value)) {
-		const normalized = normalizeNoteState(entry);
-		if (normalized) {
-			notes[path] = normalized;
-		}
-	}
-	return notes;
-}
-
-function normalizeNoteState(value: unknown): NoteState | null {
-	if (!isRecord(value)) {
-		return null;
-	}
-
-	const legacy = value as LegacyNoteState;
-	const baseBlocks = isRecord(legacy.baseBlocks) ? normalizeBaseBlocks(legacy.baseBlocks) : {};
-	const lastSyncedManagedHash = typeof legacy.lastSyncedManagedHash === "string"
-		? legacy.lastSyncedManagedHash
-		: typeof legacy.lastSyncedHash === "string"
-			? legacy.lastSyncedHash
-			: "";
-
-	return {
-		baseBlocks,
-		lastSyncedManagedHash
-	};
-}
-
-function normalizeBaseBlocks(value: Record<string, unknown>): Record<string, string> {
-	const blocks: Record<string, string> = {};
-	for (const [name, block] of Object.entries(value)) {
-		blocks[name] = typeof block === "string" ? block : "";
-	}
-	return blocks;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -199,11 +130,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export const __test__ = {
-	normalizeSyncState,
-	normalizeFiles,
-	normalizeNotes,
-	normalizeNoteState,
-	normalizeBaseBlocks,
+	decodeSyncState,
+	encodeSyncState,
 	getErrorMessage,
 	isRecord
 };

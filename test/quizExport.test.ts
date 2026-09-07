@@ -1,37 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { MoodleApi } from "../src/api/moodleApi";
 import { planQuizExports } from "../src/quizExport";
 
 describe("quiz export", () => {
 	it("exports finished attempts as html and pdf resources", async () => {
-		const call: Parameters<typeof planQuizExports>[0]["call"] = async <T>(
-			method: string,
-			args?: Record<string, unknown>
-		): Promise<T> => {
-				if (method === "mod_quiz_get_user_attempts") {
-					expect(args).toMatchObject({ quizid: 9, userid: 5, status: "finished" });
-					return {
-						attempts: [
-							{ id: 17, state: "finished", timefinish: 1700000000, timestart: 1699990000, sumgrades: 8.5 }
-						]
-					} as T;
-				}
-				if (method === "mod_quiz_get_attempt_review") {
-					expect(args).toMatchObject({ attemptid: 17 });
-					return {
-						grade: "8.5/10",
-						summary: "<p>Passed</p>",
-						questions: [
-							{ html: "<div>Question body</div>" }
-						]
-					} as T;
-				}
-				throw new Error(`Unexpected method ${method}`);
-			};
-		const client: Parameters<typeof planQuizExports>[0] = { call };
+		const client: Pick<MoodleApi, "getFinishedQuizAttempts" | "getQuizAttemptReview"> = {
+			getFinishedQuizAttempts: async (quizId, userId) => {
+				expect({ quizId, userId }).toEqual({ quizId: 9, userId: 5 });
+				return [{ id: 17, state: "finished", timefinish: 1700000000, timestart: 1699990000, sumgrades: 8.5 }];
+			},
+			getQuizAttemptReview: async (attemptId) => {
+				expect(attemptId).toBe(17);
+				return { grade: "8.5/10", summary: "<p>Passed</p>", questions: [{ html: "<div>Question body</div>" }] };
+			}
+		};
 
 		const plan = await planQuizExports(
 			client,
-			"Moodle/_resources/Course (42)",
+			"Moodle/_resources/Course (42)/Quiz 1",
 			{
 				id: 7,
 				instance: 9,
@@ -62,29 +48,16 @@ describe("quiz export", () => {
 	});
 
 	it("sanitizes textarea answers and ignores unfinished attempts", async () => {
-		const call: Parameters<typeof planQuizExports>[0]["call"] = async <T>(method: string): Promise<T> => {
-				if (method === "mod_quiz_get_user_attempts") {
-					return {
-						attempts: [
-							{ id: 11, state: "inprogress", timefinish: 0 },
-							{ id: 12, status: "finished", timefinish: 1700000000 }
-						]
-					} as T;
-				}
-				if (method === "mod_quiz_get_attempt_review") {
-					return {
-						questions: [
-							{ html: "<textarea aria-label=\"Essay answer\">Final answer</textarea>" }
-						]
-					} as T;
-				}
-				throw new Error(`Unexpected method ${method}`);
-			};
-		const client: Parameters<typeof planQuizExports>[0] = { call };
+		const client: Pick<MoodleApi, "getFinishedQuizAttempts" | "getQuizAttemptReview"> = {
+			getFinishedQuizAttempts: async () => [{ id: 12, status: "finished", timefinish: 1700000000 }],
+			getQuizAttemptReview: async () => ({
+				questions: [{ html: "<textarea aria-label=\"Essay answer\">Final answer</textarea>" }]
+			})
+		};
 
 		const plan = await planQuizExports(
 			client,
-			"Moodle/_resources/Course (42)",
+			"Moodle/_resources/Course (42)/Essay quiz",
 			{ id: 8, instance: 10, name: "Essay quiz", modname: "quiz" },
 			5
 		);

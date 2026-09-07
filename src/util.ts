@@ -1,10 +1,8 @@
 import { normalizePath } from "obsidian";
+import { normalizePathSegment } from "./migration/pathNormalizer";
 
 export function safeName(name: string): string {
-	return (name ?? "Untitled")
-		.replace(/[\\/:*?"<>|]/g, "-")
-		.replace(/\s+/g, " ")
-		.trim();
+	return normalizePathSegment(name);
 }
 
 export function join(...parts: string[]): string {

@@ -1,32 +1,25 @@
 import { App, Notice, TFile, TFolder, normalizePath } from "obsidian";
-import { MoodleClient, MoodleSiteInfo } from "./moodleClient";
-import { SyncState } from "./state";
-import { createLimiter, formatBytes, isEmbeddableMedia, join, safeName, simpleHash } from "./util";
-import { ensureUserSection, extractBlock, upsertBlock } from "./blocks";
-import { diff3Merge } from "node-diff3";
-import { convertHtmlToMarkdown } from "./htmlToMarkdown";
-import { planQuizExports } from "./quizExport";
-import { renderPdfFromHtml } from "./pdf";
-
-type MoodleCourse = { id: number; fullname?: string; shortname?: string };
-type MoodleSection = { id: number; name?: string; section?: number; modules?: MoodleModule[] };
-type MoodleModule = {
-	id: number;
-	instance?: number;
-	name?: string;
-	modname?: string;
-	url?: string;
-	description?: string;
-	contents?: MoodleContent[];
-};
-type MoodleContent = {
-	type: string;        // "file"
-	filename: string;
-	fileurl: string;
-	filepath?: string;
-	timemodified?: number;
-	filesize?: number;
-};
+import { MoodleApi } from "./api/moodleApi";
+import { CourseModule, CourseSection, isFileContent } from "./domain/models";
+import { SyncState } from "./domain/syncState";
+import { createLimiter, formatBytes, isEmbeddableMedia, join, simpleHash } from "./util";
+import { createManagedPathLayout, ManagedModulePath, ManagedResourcePath } from "./migration/managedPaths";
+import { rewriteMarkdownLinks } from "./migration/linkRewriter";
+import {
+	createPathMigration,
+	CURRENT_PATH_MIGRATION_VERSION,
+	ManagedPathMapping,
+	projectMigratedPath,
+	remapSyncState
+} from "./migration/pathMigration";
+import { applyNoteMerge, NoteMergeAction, planNoteMerge } from "./merge/noteMergeActor";
+import {
+	ensureConflictTags as ensureConflictTagsFromEngine,
+	keepBothBlock as keepBothBlockFromEngine,
+	mergeManagedBlock
+} from "./merge/mergeEngine";
+import { renderCourseIndex, renderModuleNote } from "./rendering/markdownRenderer";
+import { planQuizAttemptNotes } from "./rendering/quizRenderer";
 
 export type SyncMode = "apply" | "dry-run";
 
@@ -37,19 +30,24 @@ export interface SyncProgress {
 }
 
 type PlanAction =
+	| { kind: "path-move"; from: string; to: string; pathKind: "file" | "folder" }
+	| { kind: "links-rewrite"; path: string; text: string; expectedHash: string; count: number }
+	| { kind: "state-remap"; mappings: ManagedPathMapping[]; migrationVersion: number }
 	| { kind: "ensure-folder"; path: string }
-	| { kind: "note-create"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean }
-	| { kind: "note-update"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean; noOp?: boolean }
+	| NoteMergeAction
 	| { kind: "file-download"; destPath: string; fileurl: string; timemodified?: number; filesize?: number }
 	| { kind: "file-generate-text"; destPath: string; text: string }
-	| { kind: "file-generate-pdf"; destPath: string; html: string }
 	| { kind: "file-skip"; destPath: string };
+
+type QuizApi = Pick<MoodleApi, "getFinishedQuizAttempts" | "getQuizAttemptReview">;
 
 interface SyncPlan {
 	mode: SyncMode;
 	actions: PlanAction[];
 	summary: {
 		courses: number;
+		pathMoves: number;
+		linksRewrite: number;
 		notesCreate: number;
 		notesUpdate: number;
 		noteConflicts: number;
@@ -65,17 +63,19 @@ interface SyncPlan {
 	};
 }
 
+type SyncSettings = {
+	rootFolder: string;
+	resourcesFolder: string;
+	concurrency: number;
+	convertHtmlToMarkdown: boolean;
+	writeLogFile: boolean;
+	logFilePath: string;
+};
+
 export async function runSyncV2(
 	app: App,
-	client: MoodleClient,
-	settings: {
-		rootFolder: string;
-		resourcesFolder: string;
-		concurrency: number;
-		convertHtmlToMarkdown: boolean;
-		writeLogFile: boolean;
-		logFilePath: string;
-	},
+	client: MoodleApi,
+	settings: SyncSettings,
 	state: SyncState,
 	saveState: (s: SyncState) => Promise<void>,
 	mode: SyncMode,
@@ -111,52 +111,66 @@ export async function runSyncV2(
 
 async function buildPlan(
 	app: App,
-	client: MoodleClient,
-	settings: {
-		rootFolder: string;
-		resourcesFolder: string;
-		concurrency: number;
-		convertHtmlToMarkdown: boolean;
-		writeLogFile: boolean;
-		logFilePath: string;
-	},
+	client: MoodleApi,
+	settings: SyncSettings,
 	state: SyncState,
 	mode: SyncMode
 ): Promise<SyncPlan> {
-	const htmlOptions = { convertHtmlToMarkdown: settings.convertHtmlToMarkdown };
 	const actions: PlanAction[] = [];
+
+	const site = await client.getSiteInfo();
+	const userId = site.userid;
+	const courses = await client.getEnrolledCourses(userId);
+	const discoveredCourses: Array<{ course: typeof courses[number]; sections: CourseSection[] }> = [];
+	for (const course of courses) {
+		discoveredCourses.push({ course, sections: await client.getCourseContents(course.id) });
+	}
+	const layout = createManagedPathLayout(discoveredCourses, settings);
+
+	let pathMoves = 0;
+	let linksRewrite = 0;
+	if (state.pathMigrationVersion < CURRENT_PATH_MIGRATION_VERSION) {
+		const migration = createPathMigration(layout.mappings, path => app.vault.getAbstractFileByPath(path) !== null);
+		const linkActions = await planLinkRewrites(app, migration.mappings);
+		pathMoves = migration.moves.length;
+		linksRewrite = linkActions.reduce((total, action) => total + action.count, 0);
+		actions.push(...migration.moves.map(move => ({
+			kind: "path-move" as const,
+			from: move.from,
+			to: move.to,
+			pathKind: move.kind
+		})));
+		actions.push(...linkActions);
+		actions.push({
+			kind: "state-remap",
+			mappings: migration.mappings,
+			migrationVersion: CURRENT_PATH_MIGRATION_VERSION
+		});
+	}
 
 	actions.push({ kind: "ensure-folder", path: settings.rootFolder });
 	actions.push({ kind: "ensure-folder", path: settings.resourcesFolder });
 
-	const site = await client.call<MoodleSiteInfo>("core_webservice_get_site_info");
-	const userId = site.userid;
-	if (typeof userId !== "number") {
-		throw new Error("Moodle did not return a numeric user ID.");
-	}
-
-	const courses = await client.call<MoodleCourse[]>("core_enrol_get_users_courses", { userid: userId });
-
 	let notesCreate = 0, notesUpdate = 0, noteConflicts = 0;
 	let filesDownload = 0, filesGenerate = 0, filesSkip = 0, bytesToDownload = 0;
 
-	for (const course of courses) {
-		const courseId = String(course.id);
-		const courseName = safeName(course.fullname ?? course.shortname ?? `Course ${courseId}`);
-
-		const courseFolder = join(settings.rootFolder, `${courseName} (${courseId})`);
-		const courseResFolder = join(settings.resourcesFolder, `${courseName} (${courseId})`);
-
-		actions.push({ kind: "ensure-folder", path: courseFolder });
-		actions.push({ kind: "ensure-folder", path: courseResFolder });
-
-		const sections = await client.call<MoodleSection[]>("core_course_get_contents", { courseid: course.id });
+	for (const course of layout.courses) {
+		const courseId = String(course.course.id);
+		actions.push({ kind: "ensure-folder", path: course.folder });
+		actions.push({ kind: "ensure-folder", path: course.resourceFolder });
 
 		// Course index note (managed block: index)
 		{
-			const indexPath = join(courseFolder, `_index.md`);
-			const rendered = renderCourseIndexManaged(courseName, courseId, sections);
-			const noteDecision = await planNoteMergeBlocks(app, state, indexPath, rendered.text, rendered.blocks);
+			const indexPath = join(course.folder, `_index.md`);
+			const rendered = renderCourseIndex(course.name, courseId, course.sections, moduleNames(course.modules));
+			const noteDecision = await planNoteMerge(
+				app,
+				state,
+				indexPath,
+				rendered.text,
+				rendered.blocks,
+				legacyPathFor(indexPath, layout.mappings)
+			);
 
 			if (noteDecision.kind === "note-update" && noteDecision.noOp) {
 				// nothing
@@ -168,54 +182,52 @@ async function buildPlan(
 			}
 		}
 
-		for (const section of sections ?? []) {
-			for (const mod of section.modules ?? []) {
-				const modName = safeName(mod.name ?? `${mod.modname ?? "module"}-${mod.id}`);
-				const modNotePath = join(courseFolder, `${modName}.md`);
+		for (const modulePath of course.modules) {
+			const { noteText, remoteBlocks, files, generatedFiles } = await planModule(
+				client,
+				modulePath.resourceFolder,
+				modulePath.section,
+				modulePath.module,
+				modulePath.resources,
+				userId
+			);
 
-				const { noteText, remoteBlocks, files, generatedFiles } = await planModule(
-					client,
-					courseResFolder,
-					section,
-					mod,
-					userId,
-					htmlOptions
-				);
+			const noteDecision = await planNoteMerge(
+				app,
+				state,
+				modulePath.notePath,
+				noteText,
+				remoteBlocks,
+				modulePath.legacyNotePath
+			);
+			if (noteDecision.kind === "note-update" && noteDecision.noOp) {
+				// nothing
+			} else {
+				if (noteDecision.kind === "note-create") notesCreate++;
+				if (noteDecision.kind === "note-update") notesUpdate++;
+				if (noteDecision.conflicted) noteConflicts++;
+				actions.push(noteDecision);
+			}
 
-				const noteDecision = await planNoteMergeBlocks(app, state, modNotePath, noteText, remoteBlocks);
-				if (noteDecision.kind === "note-update" && noteDecision.noOp) {
-					// nothing
+			for (const f of files) {
+				const dir = parentDir(f.destPath);
+				if (dir) actions.push({ kind: "ensure-folder", path: dir });
+
+				if (shouldDownload(state, f.destPath, f.timemodified, f.filesize, app, f.legacyDestPath)) {
+					filesDownload++;
+					bytesToDownload += (f.filesize ?? 0);
+					actions.push({ kind: "file-download", ...f });
 				} else {
-					if (noteDecision.kind === "note-create") notesCreate++;
-					if (noteDecision.kind === "note-update") notesUpdate++;
-					if (noteDecision.conflicted) noteConflicts++;
-					actions.push(noteDecision);
+					filesSkip++;
+					actions.push({ kind: "file-skip", destPath: f.destPath });
 				}
+			}
 
-				for (const f of files) {
-					const dir = parentDir(f.destPath);
-					if (dir) actions.push({ kind: "ensure-folder", path: dir });
-
-					if (shouldDownload(state, f.destPath, f.timemodified, f.filesize, app)) {
-						filesDownload++;
-						bytesToDownload += (f.filesize ?? 0);
-						actions.push({ kind: "file-download", ...f });
-					} else {
-						filesSkip++;
-						actions.push({ kind: "file-skip", destPath: f.destPath });
-					}
-				}
-
-				for (const f of generatedFiles) {
-					const dir = parentDir(f.destPath);
-					if (dir) actions.push({ kind: "ensure-folder", path: dir });
-					filesGenerate++;
-					if (f.format === "text") {
-						actions.push({ kind: "file-generate-text", destPath: f.destPath, text: f.text ?? "" });
-					} else {
-						actions.push({ kind: "file-generate-pdf", destPath: f.destPath, html: f.html ?? "" });
-					}
-				}
+			for (const f of generatedFiles) {
+				const dir = parentDir(f.destPath);
+				if (dir) actions.push({ kind: "ensure-folder", path: dir });
+				filesGenerate++;
+				actions.push({ kind: "file-generate-text", destPath: f.destPath, text: f.text });
 			}
 		}
 	}
@@ -227,6 +239,8 @@ async function buildPlan(
 		actions: deduped,
 		summary: {
 			courses: courses.length,
+			pathMoves,
+			linksRewrite,
 			notesCreate,
 			notesUpdate,
 			noteConflicts,
@@ -239,87 +253,32 @@ async function buildPlan(
 	};
 }
 
-async function planNoteMergeBlocks(
-	app: App,
-	state: SyncState,
-	path: string,
-	renderedRemoteNoteText: string,
-	remoteBlocks: Record<string, string>
-): Promise<Extract<PlanAction, { kind: "note-create" | "note-update" }>> {
-	const af = app.vault.getAbstractFileByPath(path);
-
-	if (!af) {
-		const noteText = ensureUserSection(renderedRemoteNoteText);
-		return { kind: "note-create", path, text: noteText, remoteBlocks, conflicted: false };
-	}
-
-	if (!(af instanceof TFile)) {
-		const noteText = ensureUserSection(renderedRemoteNoteText);
-		return { kind: "note-update", path, text: noteText, remoteBlocks, conflicted: false };
-	}
-
-	const localText = await app.vault.read(af);
-	const baseBlocks = state.notes[path]?.baseBlocks ?? {};
-	const remoteBlocksHash = hashBlocks(remoteBlocks);
-	const stateUpToDate = (state.notes[path]?.lastSyncedManagedHash === remoteBlocksHash);
-
-	let mergedText = localText;
-	let conflicted = false;
-
-	for (const [name, remoteInner] of Object.entries(remoteBlocks)) {
-		const L = (extractBlock(localText, name) ?? "").replace(/\s+$/, "");
-		const R = (remoteInner ?? "").replace(/\s+$/, "");
-		// If we don't have a base yet, treat current local block as base.
-		const B = (baseBlocks[name] ?? L ?? "").replace(/\s+$/, "");
-
-		const merged = mergeBlock({ name, base: B, local: L, remote: R });
-		mergedText = upsertBlock(mergedText, name, merged.inner);
-		if (merged.conflicted) conflicted = true;
-	}
-
-	mergedText = ensureUserSection(mergedText);
-	if (conflicted) mergedText = ensureConflictTags(mergedText);
-
-	const needsWrite = simpleHash(mergedText) !== simpleHash(localText);
-	const needsStateRefresh = !stateUpToDate;
-
-	return {
-		kind: "note-update",
-		path,
-		text: mergedText,
-		remoteBlocks,
-		conflicted,
-		noOp: (!needsWrite && !needsStateRefresh)
-	};
-}
-
 async function planModule(
-	client: MoodleClient,
-	courseResFolder: string,
-	section: MoodleSection,
-	mod: MoodleModule,
-	userId: number,
-	options: { convertHtmlToMarkdown: boolean }
+	client: QuizApi,
+	moduleResourceFolder: string,
+	section: CourseSection,
+	mod: CourseModule,
+	resources: ManagedResourcePath[],
+	userId: number
 ) {
-	const modName = safeName(mod.name ?? `${mod.modname ?? "module"}-${mod.id}`);
 	const files: Array<{
 		destPath: string;
+		legacyDestPath: string;
 		fileurl: string;
 		timemodified?: number;
 		filesize?: number;
 	}> = [];
 
 	const links: string[] = [];
-	for (const c of mod.contents ?? []) {
-		if (c.type !== "file") continue;
-
-		const filepath = (c.filepath ?? "/").replace(/^\/+/, "");
-		const filename = safeName(c.filename);
-		const destDir = join(courseResFolder, modName, filepath);
-		const destPath = normalizePath(`${destDir}/${filename}`);
+	for (const resource of resources) {
+		const c = resource.content;
+		const destPath = resource.path;
+		const legacyDestPath = resource.legacyPath;
+		const filename = destPath.split("/").pop() ?? c.filename;
 
 		files.push({
 			destPath,
+			legacyDestPath,
 			fileurl: c.fileurl,
 			timemodified: c.timemodified,
 			filesize: c.filesize
@@ -328,10 +287,10 @@ async function planModule(
 		links.push(isEmbeddableMedia(filename) ? `- ![[${destPath}]]` : `- [[${destPath}]]`);
 	}
 
-	const quizExports = await planQuizExports(client, courseResFolder, mod, userId);
+	const quizExports = await planQuizAttemptNotes(client, moduleResourceFolder, mod, userId);
 	links.push(...quizExports.resourceLinks);
 
-	const rendered = renderModuleNoteManaged(section, mod, links, options);
+	const rendered = renderModuleNote(section, mod, links);
 	return { noteText: rendered.text, remoteBlocks: rendered.blocks, files, generatedFiles: quizExports.files };
 }
 
@@ -339,7 +298,7 @@ async function planModule(
 
 async function applyPlan(
 	app: App,
-	client: MoodleClient,
+	client: MoodleApi,
 	settings: { concurrency: number },
 	state: SyncState,
 	saveState: (s: SyncState) => Promise<void>,
@@ -354,8 +313,15 @@ async function applyPlan(
 	};
 
 	const downloadActions: Array<Extract<PlanAction, { kind: "file-download" }>> = [];
+	const appliedMoves: ManagedPathMapping[] = [];
 
 	for (const a of plan.actions) {
+		if (a.kind === "path-move") {
+			await applyPathMove(app, a, appliedMoves);
+			appliedMoves.push({ from: a.from, to: a.to, kind: a.pathKind });
+			completed++; progress.tick(); setProgressText();
+			continue;
+		}
 		if (a.kind === "file-download") {
 			downloadActions.push(a);
 			continue;
@@ -372,7 +338,7 @@ async function applyPlan(
 	await Promise.allSettled(downloadActions.map(a =>
 		limiter(async () => {
 			try {
-				const buf = await client.downloadFile(a.fileurl);
+				const buf = await client.downloadResource(a.fileurl);
 				await writeBinary(app, a.destPath, buf);
 				state.files[a.destPath] = { timemodified: a.timemodified, filesize: a.filesize };
 			} finally {
@@ -390,67 +356,130 @@ async function applyNonDownloadAction(app: App, state: SyncState, a: PlanAction)
 			await ensureFolder(app, a.path);
 			return;
 
-		case "note-create":
-			await createOrOverwrite(app, a.path, a.text);
-			state.notes[a.path] = {
-				baseBlocks: normalizeBlocks(a.remoteBlocks),
-				lastSyncedManagedHash: hashBlocks(a.remoteBlocks)
-			};
-			return;
-
-		case "note-update": {
-			const af = app.vault.getAbstractFileByPath(a.path);
-			if (!af) {
-				await createOrOverwrite(app, a.path, a.text);
-				state.notes[a.path] = {
-					baseBlocks: normalizeBlocks(a.remoteBlocks),
-					lastSyncedManagedHash: hashBlocks(a.remoteBlocks)
-				};
-				return;
+		case "links-rewrite": {
+			const file = app.vault.getAbstractFileByPath(a.path);
+			if (!(file instanceof TFile)) {
+				throw new Error(`Cannot rewrite links in ${a.path}: the file is no longer available.`);
 			}
-			if (!(af instanceof TFile)) return;
-
-			const current = await app.vault.read(af);
-			const curHash = simpleHash(current);
-			const newHash = simpleHash(a.text);
-
-			if (curHash !== newHash) {
-				await app.vault.modify(af, a.text);
+			const current = await app.vault.read(file);
+			if (simpleHash(current) !== a.expectedHash) {
+				throw new Error(`Cannot rewrite links in ${a.path}: the note changed after planning. Re-run sync.`);
 			}
-
-			// Always refresh base blocks (remote-managed base) even if file didn't change.
-			state.notes[a.path] = {
-				baseBlocks: normalizeBlocks(a.remoteBlocks),
-				lastSyncedManagedHash: hashBlocks(a.remoteBlocks)
-			};
-
+			if (current !== a.text) {
+				await app.vault.modify(file, a.text);
+			}
 			return;
 		}
+
+		case "state-remap": {
+			const remapped = remapSyncState(state, a.mappings);
+			state.files = remapped.files;
+			state.notes = remapped.notes;
+			state.pathMigrationVersion = a.migrationVersion;
+			return;
+		}
+
+		case "path-move":
+			return;
+
+		case "note-create":
+			await applyNoteMerge(app, state, a);
+			return;
+
+		case "note-update":
+			await applyNoteMerge(app, state, a);
+			return;
 
 		case "file-generate-text":
 			await createOrUpdateTextFile(app, a.destPath, a.text);
 			return;
 
-		case "file-generate-pdf":
-			await writeBinary(app, a.destPath, await renderPdfFromHtml(a.html));
-			return;
 	}
 }
 
 /* ---------------- Helpers ---------------- */
 
-function shouldDownload(state: SyncState, destPath: string, timemodified?: number, filesize?: number, app?: App): boolean {
-	const prev = state.files[destPath];
+async function planLinkRewrites(
+	app: App,
+	mappings: ManagedPathMapping[]
+): Promise<Array<Extract<PlanAction, { kind: "links-rewrite" }>>> {
+	if (mappings.length === 0) {
+		return [];
+	}
+
+	const actions: Array<Extract<PlanAction, { kind: "links-rewrite" }>> = [];
+	for (const file of app.vault.getMarkdownFiles()) {
+		const sourcePath = file.path;
+		const text = await app.vault.read(file);
+		const rewritten = rewriteMarkdownLinks(text, {
+			sourcePath,
+			outputSourcePath: projectMigratedPath(sourcePath, mappings),
+			resolveLink: (source, linkPath) => app.metadataCache.getFirstLinkpathDest(linkPath, source)?.path ?? null,
+			mapPath: path => projectMigratedPath(path, mappings)
+		});
+		if (rewritten.text !== text) {
+			actions.push({
+				kind: "links-rewrite",
+				path: projectMigratedPath(sourcePath, mappings),
+				text: rewritten.text,
+				expectedHash: simpleHash(text),
+				count: rewritten.count
+			});
+		}
+	}
+	return actions;
+}
+
+function legacyPathFor(path: string, mappings: ManagedPathMapping[]): string {
+	return mappings.find(mapping => mapping.kind === "file" && mapping.to === path)?.from ?? path;
+}
+
+function moduleNames(modules: ManagedModulePath[]): Map<number, string> {
+	return new Map(modules.map(modulePath => [modulePath.module.id, modulePath.name]));
+}
+
+function shouldDownload(
+	state: SyncState,
+	destPath: string,
+	timemodified?: number,
+	filesize?: number,
+	app?: App,
+	legacyDestPath = destPath
+): boolean {
+	const prev = state.files[destPath] ?? state.files[legacyDestPath];
 	if (!prev) return true;
 
 	if (timemodified && prev.timemodified && timemodified > prev.timemodified) return true;
 	if (filesize && prev.filesize && filesize !== prev.filesize) return true;
 
 	if (app) {
-		const existing = app.vault.getAbstractFileByPath(destPath);
+		const existing = app.vault.getAbstractFileByPath(destPath) ?? app.vault.getAbstractFileByPath(legacyDestPath);
 		if (!existing) return true;
 	}
 	return false;
+}
+
+async function applyPathMove(
+	app: App,
+	action: Extract<PlanAction, { kind: "path-move" }>,
+	appliedMoves: ManagedPathMapping[]
+): Promise<void> {
+	const from = projectMigratedPath(action.from, appliedMoves);
+	const source = app.vault.getAbstractFileByPath(from);
+	if (!source) {
+		throw new Error(`Cannot migrate ${action.from}: the source is no longer available.`);
+	}
+	if (action.pathKind === "file" && !(source instanceof TFile)) {
+		throw new Error(`Cannot migrate ${action.from}: expected a file.`);
+	}
+	if (action.pathKind === "folder" && !(source instanceof TFolder)) {
+		throw new Error(`Cannot migrate ${action.from}: expected a folder.`);
+	}
+	if (app.vault.getAbstractFileByPath(action.to)) {
+		throw new Error(`Cannot migrate ${action.from}: destination ${action.to} already exists.`);
+	}
+	await ensureFolder(app, parentDir(action.to));
+	await app.vault.rename(source, action.to);
 }
 
 async function ensureFolder(app: App, folderPath: string) {
@@ -479,63 +508,6 @@ async function writeBinary(app: App, path: string, data: ArrayBuffer) {
 	}
 }
 
-function renderCourseIndexManaged(courseName: string, courseId: string, sections: MoodleSection[]): { text: string; blocks: Record<string, string> } {
-	const lines: string[] = [];
-	lines.push(`- Moodle course id: \`${courseId}\``);
-	lines.push("");
-	for (const s of sections ?? []) {
-		lines.push(`## ${s.name ?? `Section ${s.section ?? ""}`}`.trim());
-		for (const m of s.modules ?? []) {
-			const n = safeName(m.name ?? `${m.modname ?? "module"}-${m.id}`);
-			lines.push(`- [[${n}]]`);
-		}
-		lines.push("");
-	}
-	const indexInner = lines.join("\n").replace(/\s+$/, "");
-
-	let note = `# ${courseName}\n\n`;
-	note = upsertBlock(note, "index", indexInner);
-	note = ensureUserSection(note);
-
-	return { text: note, blocks: { index: indexInner } };
-}
-
-function renderModuleNoteManaged(
-	section: MoodleSection,
-	mod: MoodleModule,
-	resourceLinks: string[],
-	options: { convertHtmlToMarkdown: boolean }
-): { text: string; blocks: Record<string, string> } {
-	const title = mod.name ?? "Untitled";
-
-	const metaLines: string[] = [];
-	metaLines.push(`- Type: \`${mod.modname ?? "unknown"}\``);
-	metaLines.push(`- Section: ${section.name ?? section.section ?? ""}`);
-	if (mod.url) metaLines.push(`- URL: ${mod.url}`);
-	const metaInner = metaLines.join("\n").replace(/\s+$/, "");
-
-	const contentInner = (mod.description && mod.description.trim().length > 0)
-		? renderModuleContent(mod.description, options)
-		: "";
-
-	const resourcesInner = resourceLinks.join("\n").replace(/\s+$/, "");
-
-	let note = `# ${title}\n\n`;
-	note = upsertBlock(note, "meta", metaInner);
-	note = upsertBlock(note, "content", contentInner);
-	note = upsertBlock(note, "resources", resourcesInner);
-	note = ensureUserSection(note);
-
-	return { text: note, blocks: { meta: metaInner, content: contentInner, resources: resourcesInner } };
-}
-
-function renderModuleContent(html: string, options: { convertHtmlToMarkdown: boolean }): string {
-	if (!options.convertHtmlToMarkdown) {
-		return ["```html", html, "```"].join("\n");
-	}
-
-	return convertHtmlToMarkdown(html);
-}
 
 function dedupeEnsureFolder(actions: PlanAction[]): PlanAction[] {
 	const seen = new Set<string>();
@@ -555,6 +527,7 @@ function renderSummary(plan: SyncPlan, dry: boolean): string {
 	return [
 		`${head}:`,
 		`- Courses: ${s.courses}`,
+		`- Migration: ${s.pathMoves} move, ${s.linksRewrite} link rewrite`,
 		`- Notes: ${s.notesCreate} create, ${s.notesUpdate} update, ${s.noteConflicts} conflicts (#colition)`,
 		`- Files: ${s.filesDownload} download (${formatBytes(s.bytesToDownload)}), ${s.filesGenerate} generated, ${s.filesSkip} skip`,
 	].join("\n");
@@ -626,68 +599,15 @@ function hashBlocks(blocks: Record<string, string>): string {
 }
 
 function ensureConflictTags(noteText: string): string {
-	const tagLine = "#colition #conflict";
-	const trimmed = noteText.replace(/^\s+/, "");
-	if (trimmed.startsWith("#colition") || trimmed.startsWith("#conflict")) return trimmed;
-	return `${tagLine}\n\n${trimmed}`;
+	return ensureConflictTagsFromEngine(noteText);
 }
 
 function keepBothBlock(local: string, remote: string): string {
-	return [
-		"#colition",
-		"",
-		"### Local",
-		"```md",
-		(local ?? "").replace(/\s+$/, ""),
-		"```",
-		"",
-		"### Remote",
-		"```md",
-		(remote ?? "").replace(/\s+$/, ""),
-		"```",
-	].join("\n");
+	return keepBothBlockFromEngine(local, remote);
 }
 
 function mergeBlock(input: { name: string; base: string; local: string; remote: string }): { inner: string; conflicted: boolean } {
-	const B = (input.base ?? "").replace(/\s+$/, "");
-	const L = (input.local ?? "").replace(/\s+$/, "");
-	const R = (input.remote ?? "").replace(/\s+$/, "");
-
-	// Fast paths (same as before)
-	if (L === R) return { inner: R, conflicted: false };
-	if (L === B) return { inner: R, conflicted: false };
-	if (R === B) return { inner: L, conflicted: false };
-
-	// Diff3 expects arrays of lines
-	const baseLines = toLinesPreserveEmpty(B);
-	const localLines = toLinesPreserveEmpty(L);
-	const remoteLines = toLinesPreserveEmpty(R);
-
-	// Try auto merge; excludeFalseConflicts=true reduces spurious conflicts
-	const merged = diff3Merge(localLines, baseLines, remoteLines, true);
-
-	let out: string[] = [];
-	let hasConflict = false;
-
-	for (const part of merged) {
-		if ("ok" in part) {
-			out.push(...part.ok);
-		} else {
-			hasConflict = true;
-			// If you want "best-effort" even with conflicts:
-			// you could still append one side; but per your Option B,
-			// we treat this as unresolved and fall back to keepBothBlock.
-			break;
-		}
-	}
-
-	if (!hasConflict) {
-		const mergedText = fromLines(out).replace(/\s+$/, "");
-		return { inner: mergedText, conflicted: false };
-	}
-
-	// Unresolved conflict => keep both inside the block
-	return { inner: keepBothBlock(L, R), conflicted: true };
+	return mergeManagedBlock(input);
 }
 
 // Keep empty lines stable
@@ -704,13 +624,12 @@ function fromLines(lines: string[]): string {
 
 export const __test__ = {
 	buildPlan,
-	planNoteMergeBlocks,
+	planNoteMergeBlocks: planNoteMerge,
 	planModule,
 	shouldDownload,
 	parentDir,
-	renderCourseIndexManaged,
-	renderModuleNoteManaged,
-	renderModuleContent,
+	renderCourseIndexManaged: renderCourseIndex,
+	renderModuleNoteManaged: renderModuleNote,
 	dedupeEnsureFolder,
 	renderSummary,
 	appendLog,

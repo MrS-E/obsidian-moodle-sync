@@ -1,13 +1,7 @@
-import { join, safeName } from "./util";
+import { MoodleApi } from "./api/moodleApi";
+import { CourseModule, QuizAttempt, QuizQuestion, QuizReview } from "./domain/models";
 
-export interface QuizModuleLike {
-	id: number;
-	instance?: number;
-	name?: string;
-	modname?: string;
-	url?: string;
-	description?: string;
-}
+export type QuizModuleLike = Pick<CourseModule, "id" | "instance" | "name" | "modname" | "url" | "description">;
 
 export interface QuizGeneratedFile {
 	destPath: string;
@@ -21,16 +15,12 @@ export interface QuizExportPlan {
 	files: QuizGeneratedFile[];
 }
 
-interface MoodleClientLike {
-	call<T>(wsfunction: string, args?: Record<string, unknown>): Promise<T>;
-}
-
-type QuizAttempt = Record<string, unknown>;
 type StringableValue = string | number | boolean | bigint;
+type QuizApi = Pick<MoodleApi, "getFinishedQuizAttempts" | "getQuizAttemptReview">;
 
 export async function planQuizExports(
-	client: MoodleClientLike,
-	courseResFolder: string,
+	client: QuizApi,
+	moduleResourceFolder: string,
 	mod: QuizModuleLike,
 	userId: number
 ): Promise<QuizExportPlan> {
@@ -38,23 +28,21 @@ export async function planQuizExports(
 		return { resourceLinks: [], files: [] };
 	}
 
-	const attempts = await loadFinishedAttempts(client, mod.instance, userId);
+	const attempts = await client.getFinishedQuizAttempts(mod.instance, userId);
 	if (attempts.length === 0) {
 		return { resourceLinks: [], files: [] };
 	}
 
-	const modFolder = join(courseResFolder, safeName(mod.name ?? `quiz-${mod.id}`));
 	const files: QuizGeneratedFile[] = [];
 	const resourceLinks: string[] = [];
 
 	for (const attempt of attempts) {
-		const attemptId = Number(attempt.id);
-		if (!Number.isFinite(attemptId)) continue;
+		const attemptId = attempt.id;
 
-		const review = await loadAttemptReview(client, attemptId);
+		const review = await client.getQuizAttemptReview(attemptId);
 		const html = sanitizeQuizHtml(buildAttemptHtml(mod, attempt, review));
 
-		const basePath = join(modFolder, `attempt-${attemptId}`);
+		const basePath = `${moduleResourceFolder}/attempt-${attemptId}`;
 		const htmlPath = `${basePath}.html`;
 		const pdfPath = `${basePath}.pdf`;
 
@@ -68,66 +56,10 @@ export async function planQuizExports(
 	return { resourceLinks, files };
 }
 
-async function loadFinishedAttempts(
-	client: MoodleClientLike,
-	quizId: number,
-	userId: number
-): Promise<QuizAttempt[]> {
-	const calls: Array<Record<string, unknown>> = [
-		{ quizid: quizId, userid: userId, status: "finished", includepreviews: 0 },
-		{ quizid: quizId, userid: userId, status: "finished" },
-		{ quizid: quizId, status: "finished", includepreviews: 0 },
-		{ quizid: quizId, status: "finished" }
-	];
-
-	for (const args of calls) {
-		try {
-			const response = await client.call<Record<string, unknown> | QuizAttempt[]>("mod_quiz_get_user_attempts", args);
-			const attempts = normalizeAttempts(response);
-			if (attempts.length > 0) return attempts.filter(isFinishedAttempt);
-			return [];
-		} catch {
-			// Try the next signature variant.
-		}
-	}
-
-	return [];
-}
-
-async function loadAttemptReview(client: MoodleClientLike, attemptId: number): Promise<Record<string, unknown>> {
-	const calls: Array<Record<string, unknown>> = [
-		{ attemptid: attemptId, page: -1 },
-		{ attemptid: attemptId, page: 0 },
-		{ attemptid: attemptId }
-	];
-
-	for (const args of calls) {
-		try {
-			return await client.call<Record<string, unknown>>("mod_quiz_get_attempt_review", args);
-		} catch {
-			// Try the next signature variant.
-		}
-	}
-
-	return {};
-}
-
-function normalizeAttempts(response: Record<string, unknown> | QuizAttempt[]): QuizAttempt[] {
-	if (Array.isArray(response)) return response;
-	const nested = response.attempts;
-	return Array.isArray(nested) ? nested.filter((item): item is QuizAttempt => !!item && typeof item === "object") : [];
-}
-
-function isFinishedAttempt(attempt: QuizAttempt): boolean {
-	const state = firstDefinedString(attempt.state, attempt.status).toLowerCase();
-	const timeFinish = Number(attempt.timefinish ?? 0);
-	return state.includes("finished") || state.includes("overdue") || timeFinish > 0;
-}
-
 function buildAttemptHtml(
 	mod: QuizModuleLike,
 	attempt: QuizAttempt,
-	review: Record<string, unknown>
+	review: QuizReview
 ): string {
 	const title = escapeHtml(mod.name ?? `Quiz ${mod.id}`);
 	const metaLines = [
@@ -177,16 +109,15 @@ function buildAttemptHtml(
 	].join("");
 }
 
-function renderQuestions(value: unknown): string {
-	if (!Array.isArray(value) || value.length === 0) return "";
+function renderQuestions(value: QuizQuestion[] | undefined): string {
+	if (!value || value.length === 0) return "";
 
 	const items = value
 		.map((question, index) => {
-			if (!question || typeof question !== "object") return "";
 			const html = firstHtmlString(
-				(question as Record<string, unknown>).html,
-				(question as Record<string, unknown>).questionhtml,
-				(question as Record<string, unknown>).feedback
+				question.html,
+				question.questionhtml,
+				question.feedback
 			);
 			if (!html) return "";
 			return `<section class="question"><h2>Question ${index + 1}</h2>${html}</section>`;
