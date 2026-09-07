@@ -22,21 +22,24 @@ describe("settings", () => {
 			"Resources folder",
 			"Concurrency",
 			"Write sync log file",
-			"Log file path"
+			"Log file path",
+			"Include planned actions in log details"
 		]);
 
 		await createdSettings[0]?.text?.trigger("https://moodle.example.edu/");
 		await createdSettings[2]?.text?.trigger("/Course notes/");
 		await createdSettings[3]?.text?.trigger("   ");
 		await createdSettings[4]?.slider?.trigger(7);
+		await createdSettings[7]?.toggle?.trigger(true);
 		await createdSettings[5]?.toggle?.trigger(false);
 
 		expect(plugin.settings.baseUrl).toBe("https://moodle.example.edu");
 		expect(plugin.settings.rootFolder).toBe("Course notes");
 		expect(plugin.settings.resourcesFolder).toBe("Moodle/_resources");
 		expect(plugin.settings.concurrency).toBe(7);
+		expect(plugin.settings.includeActionsInLogDetails).toBe(true);
 		expect(plugin.settings.writeLogFile).toBe(false);
-		expect(plugin.saveSettings).toHaveBeenCalledTimes(4);
+		expect(plugin.saveSettings).toHaveBeenCalledTimes(5);
 		expect(createdSettings.slice(-6).map((setting) => setting.name)).not.toContain("Log file path");
 	});
 });

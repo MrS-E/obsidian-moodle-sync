@@ -123,8 +123,9 @@ Current settings:
 - Download concurrency
 - Write sync log file
 - Log file path
+- Include planned actions in log details
 
-Descriptions and finished quiz attempts are always rendered as Markdown. The log file path is shown only when log writing is enabled; each append-only entry has a compact outcome and expandable details containing the full summary, planned actions, and any failures.
+Descriptions and finished quiz attempts are always rendered as Markdown. The log file path and action-detail option are shown only when log writing is enabled; each append-only entry has a compact outcome and expandable details containing the full summary and any warnings or failures. Enable planned actions when you need the full action list for auditing.
 
 ## Installation for development
 

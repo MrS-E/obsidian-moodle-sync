@@ -105,6 +105,7 @@ describe("main", () => {
 			concurrency: 4,
 			writeLogFile: true,
 			logFilePath: "Moodle/_sync-log.md",
+			includeActionsInLogDetails: false,
 			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} }
 		});
 	});

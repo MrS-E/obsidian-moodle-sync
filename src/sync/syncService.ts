@@ -13,6 +13,7 @@ export interface SyncServiceSettings extends SyncPlannerSettings {
 	concurrency: number;
 	writeLogFile: boolean;
 	logFilePath: string;
+	includeActionsInLogDetails: boolean;
 }
 
 export interface SyncRunResult {
@@ -47,7 +48,12 @@ export class MoodleSyncService {
 			const summary = renderSyncSummary(plan, true, 0, reviewWarnings);
 			const notice = renderSyncNotice(plan, mode, 0, reviewWarnings);
 			if (settings.writeLogFile) {
-				await executor.appendLog(settings.logFilePath, notice, renderSyncLogDetails(plan, summary, []));
+				await executor.appendLog(settings.logFilePath, notice, renderSyncLogDetails(
+					plan,
+					summary,
+					[],
+					settings.includeActionsInLogDetails
+				));
 			}
 			return { plan, summary, notice, failedDownloads: [] };
 		}
@@ -56,7 +62,12 @@ export class MoodleSyncService {
 		const summary = renderSyncSummary(plan, false, result.failedDownloads.length, reviewWarnings);
 		const notice = renderSyncNotice(plan, mode, result.failedDownloads.length, reviewWarnings);
 		if (settings.writeLogFile) {
-			await executor.appendLog(settings.logFilePath, notice, renderSyncLogDetails(plan, summary, result.failedDownloads));
+			await executor.appendLog(settings.logFilePath, notice, renderSyncLogDetails(
+				plan,
+				summary,
+				result.failedDownloads,
+				settings.includeActionsInLogDetails
+			));
 		}
 		return { plan, summary, notice, failedDownloads: result.failedDownloads };
 	}
@@ -102,12 +113,11 @@ export function renderSyncNotice(plan: SyncPlan, mode: SyncMode, failedDownloads
 export function renderSyncLogDetails(
 	plan: SyncPlan,
 	summary: string,
-	failedDownloads: Array<{ path: string; error: Error }>
+	failedDownloads: Array<{ path: string; error: Error }>,
+	includeActions: boolean
 ): string {
-	const sections = [
-		renderHtmlSection("Summary", summary.split("\n").slice(1), summary.split("\n")[0]),
-		renderHtmlSection("Planned actions", plan.actions.map(describeAction))
-	];
+	const sections = [renderHtmlSection("Summary", summary.split("\n").slice(1), summary.split("\n")[0])];
+	if (includeActions) sections.push(renderHtmlSection("Planned actions", plan.actions.map(describeAction)));
 	if (failedDownloads.length > 0) {
 		sections.push(renderHtmlSection("Errors", failedDownloads
 			.map(({ path, error }) => `${path}: ${error.message}`)));

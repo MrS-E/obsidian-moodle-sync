@@ -78,7 +78,7 @@ describe("sync service", () => {
 		await app.vault.createFolder("Moodle");
 		await app.vault.create("Moodle/_sync-log.md", "# Moodle sync log\n\nPrevious entry\n");
 		const state = structuredClone(DEFAULT_STATE);
-		const settings = { ...syncSettings(), writeLogFile: true };
+		const settings = { ...syncSettings(), writeLogFile: true, includeActionsInLogDetails: true };
 
 		await runService(app, createClient().client, state, vi.fn(async () => undefined), "dry-run", settings);
 		await runService(app, createClient().client, state, vi.fn(async () => undefined), "apply", settings);
@@ -121,6 +121,7 @@ describe("sync service", () => {
 			.toContain("You may not review this quiz.");
 		expect(result.summary).toContain("Warnings: 1 quiz review unavailable");
 		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Attempt 12: Moodle API mod_quiz_get_attempt_review failed");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).not.toContain("<h3>Planned actions</h3>");
 	});
 });
 
@@ -158,7 +159,8 @@ function syncSettings() {
 		resourcesFolder: "Moodle/_resources",
 		concurrency: 2,
 		writeLogFile: false,
-		logFilePath: "Moodle/_sync-log.md"
+		logFilePath: "Moodle/_sync-log.md",
+		includeActionsInLogDetails: false
 	};
 }
 

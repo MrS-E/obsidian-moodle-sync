@@ -10,6 +10,7 @@ export interface MoodleSyncSettings {
 	// v2
 	writeLogFile: boolean;     // write Moodle/_sync-log.md
 	logFilePath: string;       // default Moodle/_sync-log.md
+	includeActionsInLogDetails: boolean;
 }
 
 export const DEFAULT_SETTINGS: MoodleSyncSettings = {
@@ -19,7 +20,8 @@ export const DEFAULT_SETTINGS: MoodleSyncSettings = {
 	resourcesFolder: "Moodle/_resources",
 	concurrency: 4,
 	writeLogFile: true,
-	logFilePath: "Moodle/_sync-log.md"
+	logFilePath: "Moodle/_sync-log.md",
+	includeActionsInLogDetails: false
 };
 
 type SettingsPlugin = Plugin & {
@@ -107,6 +109,16 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.logFilePath)
 					.onChange(async (value) => {
 						await this.saveNonEmptyPath("logFilePath", value);
+					}));
+
+			new Setting(containerEl)
+				.setName("Include planned actions in log details")
+				.setDesc("List every planned action in expanded sync-log details.")
+				.addToggle(t => t
+					.setValue(this.plugin.settings.includeActionsInLogDetails)
+					.onChange(async (value) => {
+						this.plugin.settings.includeActionsInLogDetails = value;
+						await this.plugin.saveSettings();
 					}));
 		}
 	}
