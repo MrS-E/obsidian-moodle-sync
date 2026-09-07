@@ -56,7 +56,7 @@ async function runSync(host: CommandHost, mode: SyncMode): Promise<void> {
 		host.setStatus(`Moodle sync: starting (${mode})...`);
 		const service = new MoodleSyncService(createMoodleApi(host.settings), new ObsidianVaultGateway(host.app));
 		const result = await service.run(host.settings, await host.loadSyncState(), state => host.saveSyncState(state), mode, createProgress(host));
-		new Notice(result.summary, 8000);
+		new Notice(result.notice, 8000);
 		host.setStatus("Moodle sync: idle");
 	} catch (error: unknown) {
 		console.error(error);

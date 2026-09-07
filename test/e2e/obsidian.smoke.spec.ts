@@ -24,7 +24,7 @@ test.describe("Obsidian Moodle sync smoke", () => {
 			await runCommand(page, "Test connection");
 			await expect(page.getByText("OK: Fixture Moodle / student", { exact: true })).toBeVisible();
 			await runCommand(page, "Sync now (dry-run)");
-			await expect(page.getByText("Moodle sync (dry-run) summary:", { exact: true })).toBeVisible();
+			await expect(page.getByText(/Moodle sync \(dry-run\):/)).toBeVisible();
 			await expect(readFile(join(vaultPath, "Moodle", "Course-A (42)", "Lecture-1.md"), "utf8")).rejects.toThrow();
 
 			await runCommand(page, "Sync now (apply)");

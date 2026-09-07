@@ -52,9 +52,9 @@ export class PlanExecutor {
 		return { failedDownloads: failures };
 	}
 
-	async appendLog(path: string, text: string): Promise<void> {
+	async appendLog(path: string, summary: string, details: string): Promise<void> {
 		const existing = this.vault.getEntryKind(path);
-		const entry = `\n## ${new Date().toISOString()}\n\n${text}\n`;
+		const entry = `\n## ${new Date().toISOString()}\n\n${summary}\n\n<details>\n<summary>Details</summary>\n\n${details}\n\n</details>\n`;
 		if (!existing) {
 			await this.vault.writeText(path, `# Moodle sync log\n${entry}`);
 			return;

@@ -164,7 +164,7 @@ describe("main", () => {
 		expect(noticeLog[noticeLog.length - 1]?.message).toBe("OK: Example Moodle / alice");
 	});
 
-	it("runs the registered dry-run command against Moodle fixtures without vault writes", async () => {
+	it("runs the registered dry-run command and appends its detailed log entry", async () => {
 		const app = createFakeApp();
 		const plugin = new MoodleSyncPoCv2(app as never, manifest);
 		const testPlugin = plugin as unknown as RuntimePluginHooks;
@@ -187,9 +187,10 @@ describe("main", () => {
 		if (!command) throw new Error("Dry-run command was not registered");
 		await command.callback();
 
-		expect(app.files.size).toBe(0);
-		expect(app.folders.size).toBe(0);
-		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run) summary");
+		expect(app.files.size).toBe(1);
+		expect(app.folders.size).toBe(1);
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Moodle sync (dry-run) summary:");
+		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run):");
 	});
 
 	it("loads commands only once per plugin lifecycle and marks its status on unload", async () => {

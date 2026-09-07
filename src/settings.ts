@@ -90,7 +90,7 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Write sync log file")
-			.setDesc("Append a summary to a log note in your vault.")
+			.setDesc("Append detailed dry-run and applied sync entries to a log note in your vault.")
 			.addToggle(t => t
 				.setValue(this.plugin.settings.writeLogFile)
 				.onChange(async (value) => {

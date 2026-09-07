@@ -58,10 +58,40 @@ describe("sync service", () => {
 		client.downloadResource = vi.fn(async () => { throw new Error("offline"); });
 		const state = structuredClone(DEFAULT_STATE);
 
-		const result = await runService(app, client, state, vi.fn(async () => undefined), "apply");
+		const result = await runService(
+			app,
+			client,
+			state,
+			vi.fn(async () => undefined),
+			"apply",
+			{ ...syncSettings(), writeLogFile: true }
+		);
 
 		expect(state.files).toEqual({});
 		expect(result.summary).toContain("Failures: 1 download");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("### Errors");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("offline");
+	});
+
+	it("appends detailed dry-run and apply entries to the sync log", async () => {
+		const app = createFakeApp();
+		await app.vault.createFolder("Moodle");
+		await app.vault.create("Moodle/_sync-log.md", "# Moodle sync log\n\nPrevious entry\n");
+		const state = structuredClone(DEFAULT_STATE);
+		const settings = { ...syncSettings(), writeLogFile: true };
+
+		await runService(app, createClient().client, state, vi.fn(async () => undefined), "dry-run", settings);
+		await runService(app, createClient().client, state, vi.fn(async () => undefined), "apply", settings);
+
+		const log = app.files.get("Moodle/_sync-log.md")?.text ?? "";
+		expect(log).toContain("Previous entry");
+		expect(log).toContain("Moodle sync (dry-run) summary:");
+		expect(log).toContain("Moodle sync summary:");
+		expect(log).toContain("### Planned actions");
+		expect(log).toContain("- Ensure folder: Moodle");
+		expect(log).toContain("- Download resource: Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf");
+		expect(log.match(/<details>/g)).toHaveLength(2);
+		expect(log.match(/<\/details>/g)).toHaveLength(2);
 	});
 
 	it("writes a denied quiz-review error to the attempt note and sync log", async () => {

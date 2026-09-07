@@ -20,7 +20,7 @@ This is usable for real-world testing, but not yet something I would call produc
 1. **Test connection** verifies the configured Moodle URL and web service token.
 2. A sync discovers Moodle content through a validated API adapter and captures a vault snapshot.
 3. The plugin builds a deterministic plan for migrations, note merges, generated Markdown, and resource downloads.
-4. **Sync now (dry-run)** shows that plan's summary without changing the vault or saved sync state.
+4. **Sync now (dry-run)** shows that plan's summary without executing it or changing saved sync state. When sync logging is enabled, it appends a log entry only.
 5. **Sync now (apply)** executes the plan: safe legacy-path moves and link rewrites first, then notes and generated Markdown, followed by bounded concurrent resource downloads.
 
 The executor checks planned note content before writing it. If a note changed after planning, the sync stops rather than overwriting a concurrent edit; run sync again to create a new plan.
@@ -40,7 +40,7 @@ Current behavior:
 - Merges Moodle-managed note blocks with local edits using block-level diff3.
 - Marks unresolved conflicts instead of silently overwriting content.
 - Supports dry-run planning before applying changes.
-- Can append sync summaries to a log note.
+- Can append detailed dry-run and applied-sync entries to a log note.
 - Renders finished quiz attempts as linked Markdown notes.
 - Migrates legacy plugin-generated paths to link-safe normalized names and rewrites resolved internal links.
 
@@ -124,7 +124,7 @@ Current settings:
 - Write sync log file
 - Log file path
 
-Descriptions and finished quiz attempts are always rendered as Markdown. The log file path is shown only when log writing is enabled.
+Descriptions and finished quiz attempts are always rendered as Markdown. The log file path is shown only when log writing is enabled; each append-only entry has a compact outcome and expandable details containing the full summary, planned actions, and any failures.
 
 ## Installation for development
 

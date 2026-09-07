@@ -18,6 +18,7 @@ export interface SyncServiceSettings extends SyncPlannerSettings {
 export interface SyncRunResult {
 	plan: SyncPlan;
 	summary: string;
+	notice: string;
 	failedDownloads: Array<{ path: string; error: Error }>;
 }
 
@@ -40,18 +41,24 @@ export class MoodleSyncService {
 		const snapshot = await new VaultSnapshotReader(this.vault).read();
 		const plan = createSyncPlan(remote, snapshot, state, settings, mode);
 		progress.totalSteps = plan.actions.length;
+		const executor = new PlanExecutor(this.vault, this.api, settings.concurrency);
 
 		if (mode === "dry-run") {
-			return { plan, summary: renderSyncSummary(plan, true, 0, reviewWarnings), failedDownloads: [] };
+			const summary = renderSyncSummary(plan, true, 0, reviewWarnings);
+			const notice = renderSyncNotice(plan, mode, 0, reviewWarnings);
+			if (settings.writeLogFile) {
+				await executor.appendLog(settings.logFilePath, notice, renderSyncLogDetails(plan, summary, []));
+			}
+			return { plan, summary, notice, failedDownloads: [] };
 		}
 
-		const executor = new PlanExecutor(this.vault, this.api, settings.concurrency);
 		const result = await executor.execute(plan, state, saveState, progress);
 		const summary = renderSyncSummary(plan, false, result.failedDownloads.length, reviewWarnings);
+		const notice = renderSyncNotice(plan, mode, result.failedDownloads.length, reviewWarnings);
 		if (settings.writeLogFile) {
-			await executor.appendLog(settings.logFilePath, summary);
+			await executor.appendLog(settings.logFilePath, notice, renderSyncLogDetails(plan, summary, result.failedDownloads));
 		}
-		return { plan, summary, failedDownloads: result.failedDownloads };
+		return { plan, summary, notice, failedDownloads: result.failedDownloads };
 	}
 }
 
@@ -77,9 +84,64 @@ export function renderSyncSummary(plan: SyncPlan, dryRun: boolean, failedDownloa
 	return lines.join("\n");
 }
 
+export function renderSyncNotice(plan: SyncPlan, mode: SyncMode, failedDownloads: number, reviewWarnings: string[] = []): string {
+	const summary = plan.summary;
+	const notes = summary.notesCreate + summary.notesUpdate;
+	const files = summary.resourcesDownload + summary.markdownGenerate;
+	const warnings = summary.migrationWarnings.length + reviewWarnings.length + failedDownloads;
+	const heading = mode === "dry-run" ? "Moodle sync (dry-run)" : "Moodle sync";
+	const parts = [
+		`${summary.courses} course${summary.courses === 1 ? "" : "s"}`,
+		`${notes} note${notes === 1 ? "" : "s"}`,
+		`${files} file${files === 1 ? "" : "s"}`
+	];
+	if (warnings > 0) parts.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+	return `${heading}: ${parts.join(", ")}.`;
+}
+
+export function renderSyncLogDetails(
+	plan: SyncPlan,
+	summary: string,
+	failedDownloads: Array<{ path: string; error: Error }>
+): string {
+	const sections = [
+		summary,
+		"### Planned actions\n\n" + plan.actions.map(describeAction).join("\n")
+	];
+	if (failedDownloads.length > 0) {
+		sections.push("### Errors\n\n" + failedDownloads
+			.map(({ path, error }) => `- ${path}: ${error.message}`)
+			.join("\n"));
+	}
+	return sections.join("\n\n");
+}
+
 function collectQuizReviewWarnings(remote: RemoteSyncData): string[] {
 	return remote.courses.flatMap(({ quizAttempts }) => [...quizAttempts.values()]
 		.flatMap(attempts => attempts.flatMap(({ attempt, reviewError }) => reviewError
 			? [`Attempt ${attempt.id}: ${reviewError}`]
 			: [])));
+}
+
+function describeAction(action: SyncPlan["actions"][number]): string {
+	switch (action.kind) {
+		case "path-move":
+			return `- Move ${action.pathKind}: ${action.from} → ${action.to}`;
+		case "links-rewrite":
+			return `- Rewrite ${action.count} link${action.count === 1 ? "" : "s"}: ${action.path}`;
+		case "state-remap":
+			return `- Update sync-state migration to version ${action.migrationVersion}`;
+		case "ensure-folder":
+			return `- Ensure folder: ${action.path}`;
+		case "note-merge":
+			return action.noOp
+				? `- Keep note: ${action.path}`
+				: `- ${action.operation === "create" ? "Create" : "Update"} note: ${action.path}${action.conflicted ? " (conflict)" : ""}`;
+		case "resource-download":
+			return `- Download resource: ${action.destPath}`;
+		case "resource-skip":
+			return `- Keep resource: ${action.destPath}`;
+		case "markdown-generate":
+			return `- Generate Markdown: ${action.destPath}`;
+	}
 }
