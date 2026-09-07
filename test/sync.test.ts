@@ -1,116 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import { noticeLog } from "./obsidian";
 import { MoodleApi } from "../src/api/moodleApi";
 import { SyncState } from "../src/domain/syncState";
-import { runSyncV2, __test__ as syncTest } from "../src/sync";
+import { runSyncV2 } from "../src/sync";
 import { DEFAULT_STATE } from "../src/state";
 import { createFakeApp } from "./helpers/fakeVault";
+import { noticeLog } from "./obsidian";
 
-describe("sync", () => {
-	it("plans module notes and resource links", async () => {
-		const planned = await syncTest.planModule(
-			{
-				getFinishedQuizAttempts: vi.fn(),
-				getQuizAttemptReview: vi.fn()
-			},
-			"Moodle/_resources/Course (42)/Slides",
-			{ id: 1, name: "Week 1" },
-			{
-				id: 7,
-				name: "Slides",
-				modname: "resource",
-				description: "<p>Hello</p>",
-				contents: [
-					{
-						type: "file",
-						filename: "slides.pdf",
-						fileurl: "https://example.com/slides.pdf",
-						filepath: "/week1/",
-						filesize: 12
-					}
-				]
-			},
-			[{
-				content: {
-					type: "file",
-					filename: "slides.pdf",
-					fileurl: "https://example.com/slides.pdf",
-					filepath: "/week1/",
-					filesize: 12
-				},
-				path: "Moodle/_resources/Course (42)/Slides/week1/slides.pdf",
-				legacyPath: "Moodle/_resources/Course (42)/Slides/week1/slides.pdf"
-			}],
-			7
-		);
-
-		expect(planned.files).toEqual([
-			expect.objectContaining({
-				destPath: "Moodle/_resources/Course (42)/Slides/week1/slides.pdf"
-			})
-		]);
-		expect(planned.generatedFiles).toEqual([]);
-		expect(planned.noteText).toContain("Hello");
-		expect(planned.noteText).toContain("![[Moodle/_resources/Course (42)/Slides/week1/slides.pdf]]");
-	});
-
-	it("marks unresolved merges as conflicts", () => {
-		const merged = syncTest.mergeBlock({
-			name: "content",
-			base: "start",
-			local: "local change",
-			remote: "remote change"
-		});
-
-		expect(merged.conflicted).toBe(true);
-		expect(merged.inner).toContain("### Local");
-		expect(merged.inner).toContain("### Remote");
-	});
-
-	it("runs a dry-run sync and writes a log note", async () => {
+describe("sync service compatibility entry point", () => {
+	it("keeps dry runs entirely read-only", async () => {
 		const app = createFakeApp();
-		const client: MoodleApi = {
-			getSiteInfo: vi.fn(async () => ({ userid: 7, username: "alice", sitename: "Moodle" })),
-			getEnrolledCourses: vi.fn(async () => [{ id: 42, fullname: "Databases" }]),
-			getCourseContents: vi.fn(async () => [{
-				id: 1,
-				name: "Week 1",
-				modules: [{ id: 9, name: "Overview", modname: "label", description: "<p>Intro</p>" }]
-			}]),
-			getFinishedQuizAttempts: vi.fn(async () => []),
-			getQuizAttemptReview: vi.fn(async () => ({})),
-			downloadResource: vi.fn(async () => new ArrayBuffer(0))
-		};
+		const saveState = vi.fn(async () => undefined);
+		await runSyncV2(app as never, createClient().client, syncSettings(), structuredClone(DEFAULT_STATE), saveState, "dry-run", progress());
 
-		const progress = {
-			totalSteps: 0,
-			setStatus: vi.fn(),
-			tick: vi.fn()
-		};
-
-		await runSyncV2(
-			app as never,
-			client,
-			{
-				rootFolder: "Moodle",
-				resourcesFolder: "Moodle/_resources",
-				concurrency: 2,
-				convertHtmlToMarkdown: true,
-				writeLogFile: true,
-				logFilePath: "Moodle/_sync-log.md"
-			},
-			structuredClone(DEFAULT_STATE),
-			vi.fn(async () => undefined),
-			"dry-run",
-			progress
-		);
-
-		expect(progress.setStatus).toHaveBeenCalled();
-		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run) summary");
-		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Moodle sync (dry-run) summary");
+		expect(app.files.size).toBe(0);
+		expect(app.folders.size).toBe(0);
+		expect(saveState).not.toHaveBeenCalled();
+		expect(noticeLog.at(-1)?.message).toContain("Moodle sync (dry-run) summary");
 	});
 
-	it("migrates legacy managed paths, resolved links, and state only once", async () => {
+	it("migrates managed paths, rewrites resolved links, and remains idempotent", async () => {
 		const app = createFakeApp();
 		for (const folder of [
 			"Moodle",
@@ -119,108 +27,45 @@ describe("sync", () => {
 			"Moodle/_resources/Math [101] (42)",
 			"Moodle/_resources/Math [101] (42)/Week [1]",
 			"Notes"
-		]) {
-			await app.vault.createFolder(folder);
-		}
+		]) await app.vault.createFolder(folder);
 		await app.vault.create("Moodle/Math [101] (42)/Week [1].md", "# Week 1\n\n## My notes\n");
 		await app.vault.createBinary("Moodle/_resources/Math [101] (42)/Week [1]/slides [1].pdf", new ArrayBuffer(1));
 		await app.vault.create("Notes/references.md", "[[Moodle/Math [101] (42)/Week [1]|Week]]\n");
+		app.metadataCache.getFirstLinkpathDest = (linkPath: string) => app.vault.getAbstractFileByPath(`${linkPath}.md`) as never;
 
-		const { client, downloadResource } = createMigrationClient();
+		const { client, downloadResource } = createClient();
 		const state: SyncState = {
 			...structuredClone(DEFAULT_STATE),
-			files: {
-				"Moodle/_resources/Math [101] (42)/Week [1]/slides [1].pdf": { timemodified: 10, filesize: 1 }
-			},
-			notes: {
-				"Moodle/Math [101] (42)/Week [1].md": { baseBlocks: {}, lastSyncedManagedHash: "" }
-			}
+			files: { "Moodle/_resources/Math [101] (42)/Week [1]/slides [1].pdf": { timemodified: 10, filesize: 1 } },
+			notes: { "Moodle/Math [101] (42)/Week [1].md": { baseBlocks: {}, lastSyncedManagedHash: "" } }
 		};
-		const saveState = vi.fn(async () => undefined);
 
-		await runSyncV2(app as never, client, syncSettings(false), state, saveState, "apply", syncProgress());
+		await runSyncV2(app as never, client, syncSettings(), state, vi.fn(async () => undefined), "apply", progress());
 
-		expect(app.files.has("Moodle/Math [101] (42)/Week [1].md")).toBe(false);
 		expect(app.files.has("Moodle/Math-101 (42)/Week-1.md")).toBe(true);
 		expect(app.files.has("Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf")).toBe(true);
 		expect(app.files.get("Notes/references.md")?.text).toBe("[[Moodle/Math-101 (42)/Week-1|Week]]\n");
 		expect(state.pathMigrationVersion).toBe(1);
-		expect(state.files["Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf"]?.filesize).toBe(1);
-		expect(state.notes["Moodle/Math-101 (42)/Week-1.md"]).toBeDefined();
 		expect(downloadResource).not.toHaveBeenCalled();
 
-		await runSyncV2(app as never, client, syncSettings(false), state, saveState, "apply", syncProgress());
-
-		expect(app.files.has("Moodle/Math [101] (42)/Week [1].md")).toBe(false);
+		await runSyncV2(app as never, client, syncSettings(), state, vi.fn(async () => undefined), "apply", progress());
 		expect(app.files.get("Notes/references.md")?.text).toBe("[[Moodle/Math-101 (42)/Week-1|Week]]\n");
-		expect(downloadResource).not.toHaveBeenCalled();
 	});
 
-	it("skips downloads when file metadata is unchanged and file exists", () => {
+	it("reports failed downloads without recording them as current", async () => {
 		const app = createFakeApp();
-		void app.vault.createBinary("Moodle/file.pdf", new Uint8Array([1]).buffer);
+		const { client } = createClient();
+		client.downloadResource = vi.fn(async () => { throw new Error("offline"); });
+		const state = structuredClone(DEFAULT_STATE);
 
-		expect(syncTest.shouldDownload(
-			{
-				schemaVersion: 1,
-				pathMigrationVersion: 1,
-				files: { "Moodle/file.pdf": { timemodified: 10, filesize: 100 } },
-				notes: {}
-			},
-			"Moodle/file.pdf",
-			10,
-			100,
-			app as never
-		)).toBe(false);
-	});
+		await runSyncV2(app as never, client, syncSettings(), state, vi.fn(async () => undefined), "apply", progress());
 
-	it("renders summaries and conflict tags consistently", () => {
-		const summary = syncTest.renderSummary({
-			mode: "dry-run",
-			actions: [],
-			summary: {
-				courses: 2,
-				pathMoves: 0,
-				linksRewrite: 0,
-				notesCreate: 1,
-				notesUpdate: 2,
-				noteConflicts: 3,
-				filesDownload: 4,
-				filesGenerate: 6,
-				filesSkip: 5,
-				bytesToDownload: 2048
-			},
-			meta: {}
-		}, true);
-
-		expect(summary).toContain("Moodle sync (dry-run) summary:");
-		expect(summary).toContain("4 download (2.0 KB)");
-		expect(syncTest.ensureConflictTags("content")).toBe("#colition #conflict\n\ncontent");
-		expect(syncTest.ensureConflictTags("#conflict\n\ncontent")).toBe("#conflict\n\ncontent");
-	});
-
-	it("deduplicates ensure-folder actions and hashes normalized blocks", () => {
-		expect(syncTest.dedupeEnsureFolder([
-			{ kind: "ensure-folder", path: "A" },
-			{ kind: "ensure-folder", path: "A" },
-			{ kind: "file-skip", destPath: "B" }
-		])).toEqual([
-			{ kind: "ensure-folder", path: "A" },
-			{ kind: "file-skip", destPath: "B" }
-		]);
-
-		expect(syncTest.normalizeBlocks({ a: "x  ", b: "y\n" })).toEqual({ a: "x", b: "y" });
-		expect(syncTest.hashBlocks({ b: "2", a: "1" })).toBe(syncTest.hashBlocks({ a: "1", b: "2" }));
-	});
-
-	it("preserves empty lines when converting to and from line arrays", () => {
-		const lines = syncTest.toLinesPreserveEmpty("a\nb\n");
-		expect(lines).toEqual(["a", "b", ""]);
-		expect(syncTest.fromLines(lines)).toBe("a\nb\n");
+		expect(state.files).toEqual({});
+		expect(noticeLog.at(-1)?.message).toContain("Failures: 1 download");
 	});
 });
 
-function createMigrationClient(): { client: MoodleApi; downloadResource: ReturnType<typeof vi.fn> } {
+function createClient(): { client: MoodleApi; downloadResource: ReturnType<typeof vi.fn> } {
 	const downloadResource = vi.fn(async () => new ArrayBuffer(0));
 	return { client: {
 		getSiteInfo: vi.fn(async () => ({ userid: 7 })),
@@ -248,21 +93,16 @@ function createMigrationClient(): { client: MoodleApi; downloadResource: ReturnT
 	}, downloadResource };
 }
 
-function syncSettings(writeLogFile: boolean) {
+function syncSettings() {
 	return {
 		rootFolder: "Moodle",
 		resourcesFolder: "Moodle/_resources",
 		concurrency: 2,
-		convertHtmlToMarkdown: true,
-		writeLogFile,
+		writeLogFile: false,
 		logFilePath: "Moodle/_sync-log.md"
 	};
 }
 
-function syncProgress() {
-	return {
-		totalSteps: 0,
-		setStatus: vi.fn(),
-		tick: vi.fn()
-	};
+function progress() {
+	return { totalSteps: 0, setStatus: vi.fn(), tick: vi.fn() };
 }

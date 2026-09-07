@@ -43,6 +43,9 @@ export function createFakeApp() {
 				.filter(entry => entry.file.path.endsWith(".md"))
 				.map(entry => entry.file);
 		},
+		getAllLoadedFiles(): Array<TFile | TFolder> {
+			return [...folders.values(), ...files.values()].map(entry => entry instanceof TFolder ? entry : entry.file);
+		},
 		async rename(file: TFile | TFolder, path: string): Promise<void> {
 			if (file instanceof TFolder) {
 				const sourcePath = file.path;

@@ -72,3 +72,19 @@ export interface QuizReview {
 	overallfeedback?: string;
 	questions?: QuizQuestion[];
 }
+
+export interface RemoteQuizAttempt {
+	attempt: QuizAttempt;
+	review: QuizReview;
+}
+
+export interface RemoteCourse {
+	course: Course;
+	sections: CourseSection[];
+	quizAttempts: Map<number, RemoteQuizAttempt[]>;
+}
+
+export interface RemoteSyncData {
+	site: SiteInfo;
+	courses: RemoteCourse[];
+}

@@ -1,31 +1,45 @@
-import { App, TFile } from "obsidian";
 import { SyncState } from "../domain/syncState";
 import { simpleHash } from "../util";
+import { NoteMergeWriter } from "../vault/vaultGateway";
 import { ensureUserSection, extractBlock, upsertBlock } from "./managedBlocks";
 import { ensureConflictTags, mergeManagedBlock } from "./mergeEngine";
 
-export type NoteMergeAction =
-	| { kind: "note-create"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean }
-	| { kind: "note-update"; path: string; text: string; remoteBlocks: Record<string, string>; conflicted: boolean; expectedHash: string; noOp?: boolean };
+export interface NoteMergeAction {
+	kind: "note-merge";
+	operation: "create" | "update";
+	path: string;
+	text: string;
+	remoteBlocks: Record<string, string>;
+	conflicted: boolean;
+	expectedHash?: string;
+	noOp?: boolean;
+}
 
-export async function planNoteMerge(
-	app: App,
+export interface NoteMergeSnapshot {
+	path: string;
+	text: string;
+}
+
+export function planNoteMerge(
 	state: SyncState,
 	path: string,
 	renderedRemoteNoteText: string,
 	remoteBlocks: Record<string, string>,
-	legacyPath = path
-): Promise<NoteMergeAction> {
-	const abstractFile = app.vault.getAbstractFileByPath(legacyPath) ?? app.vault.getAbstractFileByPath(path);
-	if (!abstractFile) {
-		return { kind: "note-create", path, text: ensureUserSection(renderedRemoteNoteText), remoteBlocks, conflicted: false };
-	}
-	if (!(abstractFile instanceof TFile)) {
-		throw new Error(`Cannot merge ${path}: the destination is not a file.`);
+	current: NoteMergeSnapshot | undefined
+): NoteMergeAction {
+	if (!current) {
+		return {
+			kind: "note-merge",
+			operation: "create",
+			path,
+			text: ensureUserSection(renderedRemoteNoteText),
+			remoteBlocks,
+			conflicted: false
+		};
 	}
 
-	const localText = await app.vault.read(abstractFile);
-	const noteState = state.notes[path] ?? state.notes[legacyPath];
+	const localText = current.text;
+	const noteState = state.notes[path] ?? state.notes[current.path];
 	let mergedText = localText;
 	let conflicted = false;
 	for (const [name, remoteInner] of Object.entries(remoteBlocks)) {
@@ -40,7 +54,8 @@ export async function planNoteMerge(
 	const currentHash = simpleHash(localText);
 	const stateUpToDate = noteState?.lastSyncedManagedHash === hashBlocks(remoteBlocks);
 	return {
-		kind: "note-update",
+		kind: "note-merge",
+		operation: "update",
 		path,
 		text: mergedText,
 		remoteBlocks,
@@ -50,23 +65,22 @@ export async function planNoteMerge(
 	};
 }
 
-export async function applyNoteMerge(app: App, state: SyncState, action: NoteMergeAction): Promise<void> {
-	if (action.kind === "note-create") {
-		if (app.vault.getAbstractFileByPath(action.path)) {
+export async function applyNoteMerge(vault: NoteMergeWriter, state: SyncState, action: NoteMergeAction): Promise<void> {
+	if (action.operation === "create") {
+		if (vault.getEntryKind(action.path)) {
 			throw new Error(`Cannot create ${action.path}: the file changed after planning. Re-run sync.`);
 		}
-		await app.vault.create(action.path, action.text);
+		await vault.writeText(action.path, action.text);
 	} else {
-		const file = app.vault.getAbstractFileByPath(action.path);
-		if (!(file instanceof TFile)) {
+		if (vault.getEntryKind(action.path) !== "file") {
 			throw new Error(`Cannot merge ${action.path}: the file changed after planning. Re-run sync.`);
 		}
-		const current = await app.vault.read(file);
+		const current = await vault.readText(action.path);
 		if (simpleHash(current) !== action.expectedHash) {
 			throw new Error(`Cannot merge ${action.path}: the file changed after planning. Re-run sync.`);
 		}
 		if (current !== action.text) {
-			await app.vault.modify(file, action.text);
+			await vault.writeText(action.path, action.text);
 		}
 	}
 

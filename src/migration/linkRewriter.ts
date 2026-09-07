@@ -10,6 +10,23 @@ export interface LinkRewriteResult {
 	count: number;
 }
 
+export function collectMarkdownLinkTargets(text: string): string[] {
+	const links = new Set<string>();
+	transformUnprotectedMarkdown(text, line => {
+		line.replace(/!?\[\[([^\n]*?)\]\]/g, (whole, target: string) => {
+			links.add(splitWikiTarget(target).path);
+			return whole;
+		});
+		line.replace(/!?\[[^\]\n]*\]\(([^()\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g, (whole, target: string) => {
+			const { path } = splitPathSuffix(target);
+			if (!isExternalTarget(path)) links.add(path);
+			return whole;
+		});
+		return line;
+	});
+	return [...links];
+}
+
 export function rewriteMarkdownLinks(text: string, options: LinkRewriteOptions): LinkRewriteResult {
 	let count = 0;
 	const replaceLink = (linkPath: string): string | null => {

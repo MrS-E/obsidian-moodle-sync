@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import MoodleSyncPoCv2, { __test__ as mainTest } from "../src/main";
 import { noticeLog, requestLog, setRequestUrlImpl } from "./obsidian";
+import { createFakeApp } from "./helpers/fakeVault";
 
 type RuntimePluginHooks = {
 	__setData: (data: unknown) => void;
@@ -161,6 +162,34 @@ describe("main", () => {
 		expect(requestLog[0]?.body).toContain("wstoken=token123");
 		expect(requestLog[0]?.body).toContain("wsfunction=core_webservice_get_site_info");
 		expect(noticeLog[noticeLog.length - 1]?.message).toBe("OK: Example Moodle / alice");
+	});
+
+	it("runs the registered dry-run command against Moodle fixtures without vault writes", async () => {
+		const app = createFakeApp();
+		const plugin = new MoodleSyncPoCv2(app as never, manifest);
+		const testPlugin = plugin as unknown as RuntimePluginHooks;
+		testPlugin.__setData({ baseUrl: "https://moodle.example.edu", token: "token123" });
+		setRequestUrlImpl(async ({ body }) => {
+			if (body?.includes("core_webservice_get_site_info")) {
+				return { status: 200, json: { userid: 7 }, arrayBuffer: new ArrayBuffer(0) };
+			}
+			if (body?.includes("core_enrol_get_users_courses")) {
+				return { status: 200, json: [{ id: 42, fullname: "Course" }], arrayBuffer: new ArrayBuffer(0) };
+			}
+			if (body?.includes("core_course_get_contents")) {
+				return { status: 200, json: [{ id: 1, modules: [] }], arrayBuffer: new ArrayBuffer(0) };
+			}
+			throw new Error(`Unexpected request: ${body}`);
+		});
+
+		await plugin.onload();
+		const command = testPlugin.commands.find(item => item.id === "sync-now-dry-run");
+		if (!command) throw new Error("Dry-run command was not registered");
+		await command.callback();
+
+		expect(app.files.size).toBe(0);
+		expect(app.folders.size).toBe(0);
+		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run) summary");
 	});
 
 	it("formats unknown thrown values safely", () => {

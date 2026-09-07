@@ -1,5 +1,4 @@
-import { MoodleApi } from "../api/moodleApi";
-import { CourseModule, MoodleDisplayValue, QuizAttempt, QuizQuestion, QuizReview } from "../domain/models";
+import { CourseModule, MoodleDisplayValue, QuizAttempt, QuizQuestion, QuizReview, RemoteQuizAttempt } from "../domain/models";
 import { renderMoodleHtml } from "./htmlToMarkdown";
 
 export interface QuizMarkdownNote {
@@ -12,15 +11,15 @@ export interface QuizAttemptPlan {
 	files: QuizMarkdownNote[];
 }
 
-type QuizApi = Pick<MoodleApi, "getFinishedQuizAttempts" | "getQuizAttemptReview">;
 type QuizModule = Pick<CourseModule, "id" | "instance" | "name" | "modname" | "url" | "description">;
 
-export async function planQuizAttemptNotes(client: QuizApi, moduleFolder: string, module: QuizModule, userId: number): Promise<QuizAttemptPlan> {
-	if (module.modname !== "quiz" || !module.instance) return { resourceLinks: [], files: [] };
-	const attempts = await client.getFinishedQuizAttempts(module.instance, userId);
+export function renderQuizAttemptNotes(
+	moduleFolder: string,
+	module: QuizModule,
+	attempts: RemoteQuizAttempt[]
+): QuizAttemptPlan {
 	const files: QuizMarkdownNote[] = [];
-	for (const attempt of attempts) {
-		const review = await client.getQuizAttemptReview(attempt.id);
+	for (const { attempt, review } of attempts) {
 		files.push({ destPath: `${moduleFolder}/attempt-${attempt.id}.md`, text: renderQuizAttempt(module, attempt, review) });
 	}
 	return { resourceLinks: files.map(file => `- [[${file.destPath.slice(0, -3)}]]`), files };
