@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import MoodleSyncPoCv2, { __test__ as mainTest } from "../src/main";
+import { noticeLog, requestLog, setRequestUrlImpl } from "./obsidian";
+import { createFakeApp } from "./helpers/fakeVault";
 
 type RuntimePluginHooks = {
 	__setData: (data: unknown) => void;
 	savedData: unknown[];
+	commands: Array<{ id: string; callback: () => Promise<void> }>;
 };
 
 const manifest = {
@@ -17,8 +20,8 @@ const manifest = {
 };
 
 describe("main", () => {
-	it("normalizes legacy sync state", () => {
-		expect(mainTest.normalizeSyncState({
+	it("decodes legacy sync state", () => {
+		expect(mainTest.decodeSyncState({
 			files: {
 				"a.bin": { timemodified: 1, filesize: 2 }
 			},
@@ -29,6 +32,8 @@ describe("main", () => {
 				}
 			}
 		})).toEqual({
+			schemaVersion: 1,
+			pathMigrationVersion: 0,
 			files: {
 				"a.bin": { timemodified: 1, filesize: 2 }
 			},
@@ -42,14 +47,16 @@ describe("main", () => {
 	});
 
 	it("falls back to an empty sync state for invalid persisted data", () => {
-		expect(mainTest.normalizeSyncState("invalid")).toEqual({
+		expect(mainTest.decodeSyncState("invalid")).toEqual({
+			schemaVersion: 1,
+			pathMigrationVersion: 0,
 			files: {},
 			notes: {}
 		});
 	});
 
 	it("normalizes malformed file and note entries conservatively", () => {
-		expect(mainTest.normalizeSyncState({
+		expect(mainTest.decodeSyncState({
 			files: {
 				"ok.bin": { timemodified: 10, filesize: 12 },
 				"bad.bin": "oops"
@@ -62,6 +69,8 @@ describe("main", () => {
 				"bad.md": 42
 			}
 		})).toEqual({
+			schemaVersion: 1,
+			pathMigrationVersion: 0,
 			files: {
 				"ok.bin": { timemodified: 10, filesize: 12 }
 			},
@@ -79,6 +88,7 @@ describe("main", () => {
 		const testPlugin = plugin as unknown as RuntimePluginHooks;
 		testPlugin.__setData({
 			baseUrl: "https://moodle.example.edu",
+			convertHtmlToMarkdown: true,
 			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} }
 		});
 
@@ -93,9 +103,9 @@ describe("main", () => {
 			rootFolder: "Moodle",
 			resourcesFolder: "Moodle/_resources",
 			concurrency: 4,
-			convertHtmlToMarkdown: false,
 			writeLogFile: true,
 			logFilePath: "Moodle/_sync-log.md",
+			includeActionsInLogDetails: false,
 			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} }
 		});
 	});
@@ -115,6 +125,8 @@ describe("main", () => {
 		expect(typeof maybeLoadSyncState).toBe("function");
 		const state = await (maybeLoadSyncState as () => Promise<unknown>).call(plugin);
 		expect(state).toEqual({
+			schemaVersion: 1,
+			pathMigrationVersion: 0,
 			files: {},
 			notes: {
 				"note.md": {
@@ -125,8 +137,69 @@ describe("main", () => {
 		});
 	});
 
-	it("formats unknown thrown values safely", () => {
-		expect(mainTest.getErrorMessage(new Error("boom"))).toBe("boom");
-		expect(mainTest.getErrorMessage("boom")).toBe("boom");
+	it("keeps the test connection command ID and uses the validated API", async () => {
+		const plugin = new MoodleSyncPoCv2({} as never, manifest);
+		const testPlugin = plugin as unknown as RuntimePluginHooks;
+		testPlugin.__setData({
+			baseUrl: "https://moodle.example.edu",
+			token: "token123"
+		});
+		setRequestUrlImpl(async () => ({
+			status: 200,
+			json: { sitename: "Example Moodle", username: "alice", userid: 7 },
+			arrayBuffer: new ArrayBuffer(0)
+		}));
+
+		await plugin.onload();
+		expect(testPlugin.commands.map(command => command.id)).toEqual([
+			"test-connection",
+			"sync-now-apply",
+			"sync-now-dry-run"
+		]);
+		const command = testPlugin.commands.find(item => item.id === "test-connection");
+		if (!command) throw new Error("Test connection command was not registered");
+		await command.callback();
+
+		expect(requestLog[0]?.body).toContain("wstoken=token123");
+		expect(requestLog[0]?.body).toContain("wsfunction=core_webservice_get_site_info");
+		expect(noticeLog[noticeLog.length - 1]?.message).toBe("OK: Example Moodle / alice");
+	});
+
+	it("runs the registered dry-run command and appends its detailed log entry", async () => {
+		const app = createFakeApp();
+		const plugin = new MoodleSyncPoCv2(app as never, manifest);
+		const testPlugin = plugin as unknown as RuntimePluginHooks;
+		testPlugin.__setData({ baseUrl: "https://moodle.example.edu", token: "token123" });
+		setRequestUrlImpl(async ({ body }) => {
+			if (body?.includes("core_webservice_get_site_info")) {
+				return { status: 200, json: { userid: 7 }, arrayBuffer: new ArrayBuffer(0) };
+			}
+			if (body?.includes("core_enrol_get_users_courses")) {
+				return { status: 200, json: [{ id: 42, fullname: "Course" }], arrayBuffer: new ArrayBuffer(0) };
+			}
+			if (body?.includes("core_course_get_contents")) {
+				return { status: 200, json: [{ id: 1, modules: [] }], arrayBuffer: new ArrayBuffer(0) };
+			}
+			throw new Error(`Unexpected request: ${body}`);
+		});
+
+		await plugin.onload();
+		const command = testPlugin.commands.find(item => item.id === "sync-now-dry-run");
+		if (!command) throw new Error("Dry-run command was not registered");
+		await command.callback();
+
+		expect(app.files.size).toBe(1);
+		expect(app.folders.size).toBe(1);
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Moodle sync (dry-run) summary:");
+		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run):");
+	});
+
+	it("loads commands only once per plugin lifecycle and marks its status on unload", async () => {
+		const plugin = new MoodleSyncPoCv2({} as never, manifest);
+		const testPlugin = plugin as unknown as RuntimePluginHooks;
+		await plugin.onload();
+		expect(testPlugin.commands).toHaveLength(3);
+		plugin.onunload();
+		expect(mainTest.isRecord({})).toBe(true);
 	});
 });

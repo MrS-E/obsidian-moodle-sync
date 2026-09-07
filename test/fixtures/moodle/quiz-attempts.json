@@ -1,0 +1,16 @@
+{
+	"attempts": [
+		{
+			"id": 17,
+			"state": "finished",
+			"timefinish": 1700000000,
+			"timestart": 1699990000,
+			"sumgrades": 8.5
+		},
+		{
+			"id": 18,
+			"state": "inprogress",
+			"timefinish": 0
+		}
+	]
+}

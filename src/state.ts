@@ -1,27 +1,13 @@
-export interface FileState {
-	timemodified?: number;
-	filesize?: number;
-}
-
-export interface NoteState {
-	/**
-	 * Last synced remote-managed blocks ("base" for 3-way merge).
-	 * Keys are block names like: meta, content, resources, index.
-	 */
-	baseBlocks: Record<string, string>;
-
-	/**
-	 * Optional: hash of concatenated baseBlocks to quickly detect "local unchanged since last sync".
-	 */
-	lastSyncedManagedHash: string;
-}
-
-export interface SyncState {
-	files: Record<string, FileState>;   // keyed by vault path
-	notes: Record<string, NoteState>;   // keyed by vault path
-}
-
-export const DEFAULT_STATE: SyncState = {
-	files: {},
-	notes: {}
-};
+export {
+	CURRENT_SYNC_STATE_VERSION,
+	CURRENT_PATH_MIGRATION_VERSION,
+	DEFAULT_SYNC_STATE,
+	DEFAULT_SYNC_STATE as DEFAULT_STATE,
+	decodeSyncState,
+	encodeSyncState,
+	normalizeBaseBlocks,
+	normalizeFiles,
+	normalizeNoteState,
+	normalizeNotes
+} from "./domain/syncState";
+export type { FileState, NoteState, SyncState } from "./domain/syncState";

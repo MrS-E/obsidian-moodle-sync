@@ -6,11 +6,11 @@ export interface MoodleSyncSettings {
 	rootFolder: string;
 	resourcesFolder: string;
 	concurrency: number;
-	convertHtmlToMarkdown: boolean;
 
 	// v2
 	writeLogFile: boolean;     // write Moodle/_sync-log.md
 	logFilePath: string;       // default Moodle/_sync-log.md
+	includeActionsInLogDetails: boolean;
 }
 
 export const DEFAULT_SETTINGS: MoodleSyncSettings = {
@@ -19,10 +19,9 @@ export const DEFAULT_SETTINGS: MoodleSyncSettings = {
 	rootFolder: "Moodle",
 	resourcesFolder: "Moodle/_resources",
 	concurrency: 4,
-	convertHtmlToMarkdown: false,
-
 	writeLogFile: true,
-	logFilePath: "Moodle/_sync-log.md"
+	logFilePath: "Moodle/_sync-log.md",
+	includeActionsInLogDetails: false
 };
 
 type SettingsPlugin = Plugin & {
@@ -63,11 +62,11 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Root folder")
+			.setDesc("Store generated Markdown notes in this vault folder.")
 			.addText(t => t
 				.setValue(this.plugin.settings.rootFolder)
 				.onChange(async (value) => {
-					this.plugin.settings.rootFolder = value.trim();
-					await this.plugin.saveSettings();
+					await this.saveNonEmptyPath("rootFolder", value);
 				}));
 
 		new Setting(containerEl)
@@ -76,8 +75,7 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 			.addText(t => t
 				.setValue(this.plugin.settings.resourcesFolder)
 				.onChange(async (value) => {
-					this.plugin.settings.resourcesFolder = value.trim();
-					await this.plugin.saveSettings();
+					await this.saveNonEmptyPath("resourcesFolder", value);
 				}));
 
 		new Setting(containerEl)
@@ -93,33 +91,42 @@ export class MoodleSyncSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName("Convert descriptions")
-			.setDesc("Store converted descriptions instead of raw blocks.")
-			.addToggle(t => t
-				.setValue(this.plugin.settings.convertHtmlToMarkdown)
-				.onChange(async (value) => {
-					this.plugin.settings.convertHtmlToMarkdown = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
 			.setName("Write sync log file")
-			.setDesc("Append a summary to a log note in your vault.")
+			.setDesc("Append detailed dry-run and applied sync entries to a log note in your vault.")
 			.addToggle(t => t
 				.setValue(this.plugin.settings.writeLogFile)
 				.onChange(async (value) => {
 					this.plugin.settings.writeLogFile = value;
 					await this.plugin.saveSettings();
+					this.display();
 				}));
 
-		new Setting(containerEl)
-			.setName("Log file path")
-			.setDesc("Where to append sync logs.")
-			.addText(t => t
-				.setValue(this.plugin.settings.logFilePath)
-				.onChange(async (value) => {
-					this.plugin.settings.logFilePath = value.trim();
-					await this.plugin.saveSettings();
-				}));
+		if (this.plugin.settings.writeLogFile) {
+			new Setting(containerEl)
+				.setName("Log file path")
+				.setDesc("Where to append sync logs.")
+				.addText(t => t
+					.setValue(this.plugin.settings.logFilePath)
+					.onChange(async (value) => {
+						await this.saveNonEmptyPath("logFilePath", value);
+					}));
+
+			new Setting(containerEl)
+				.setName("Include planned actions in log details")
+				.setDesc("List every planned action in expanded sync-log details.")
+				.addToggle(t => t
+					.setValue(this.plugin.settings.includeActionsInLogDetails)
+					.onChange(async (value) => {
+						this.plugin.settings.includeActionsInLogDetails = value;
+						await this.plugin.saveSettings();
+					}));
+		}
+	}
+
+	private async saveNonEmptyPath(setting: "rootFolder" | "resourcesFolder" | "logFilePath", value: string): Promise<void> {
+		const normalized = value.trim().replace(/^\/+|\/+$/g, "");
+		if (!normalized) return;
+		this.plugin.settings[setting] = normalized;
+		await this.plugin.saveSettings();
 	}
 }

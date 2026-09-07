@@ -37,11 +37,49 @@ export function createFakeApp() {
 		},
 		async read(file: TFile): Promise<string> {
 			return files.get(file.path)?.text ?? "";
+		},
+		getMarkdownFiles(): TFile[] {
+			return [...files.values()]
+				.filter(entry => entry.file.path.endsWith(".md"))
+				.map(entry => entry.file);
+		},
+		getAllLoadedFiles(): Array<TFile | TFolder> {
+			return [...folders.values(), ...files.values()].map(entry => entry instanceof TFolder ? entry : entry.file);
+		},
+		async rename(file: TFile | TFolder, path: string): Promise<void> {
+			if (file instanceof TFolder) {
+				const sourcePath = file.path;
+				const movedFolders = [...folders.entries()].filter(([oldPath]) => oldPath === sourcePath || oldPath.startsWith(`${sourcePath}/`));
+				const movedFiles = [...files.entries()].filter(([oldPath]) => oldPath.startsWith(`${sourcePath}/`));
+				for (const [oldPath, folder] of movedFolders) {
+					folders.delete(oldPath);
+					folder.path = `${path}${oldPath.slice(sourcePath.length)}`;
+					folders.set(folder.path, folder);
+				}
+				for (const [oldPath, entry] of movedFiles) {
+					files.delete(oldPath);
+					entry.file.path = `${path}${oldPath.slice(sourcePath.length)}`;
+					files.set(entry.file.path, entry);
+				}
+				return;
+			}
+			const entry = files.get(file.path);
+			if (!entry) return;
+			files.delete(file.path);
+			file.path = path;
+			files.set(path, entry);
+		}
+	};
+	const metadataCache = {
+		getFirstLinkpathDest(linkpath: string): TFile | null {
+			const direct = files.get(linkpath)?.file ?? files.get(`${linkpath}.md`)?.file;
+			return direct ?? null;
 		}
 	};
 
 	return {
 		vault,
+		metadataCache,
 		files,
 		folders
 	};

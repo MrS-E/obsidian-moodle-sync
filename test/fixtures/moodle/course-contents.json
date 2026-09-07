@@ -1,0 +1,30 @@
+[
+	{
+		"id": 1,
+		"name": "Week 1",
+		"section": 1,
+		"modules": [
+			{
+				"id": 9,
+				"instance": 10,
+				"name": "Slides",
+				"modname": "resource",
+				"url": "https://moodle.example.edu/mod/resource/view.php?id=9",
+				"description": "<p>Read these slides.</p>",
+				"contents": [
+					{
+						"type": "file",
+						"filename": "slides.pdf",
+						"fileurl": "https://moodle.example.edu/pluginfile.php/1/slides.pdf",
+						"filepath": "/week1/",
+						"timemodified": 1700000000,
+						"filesize": 12
+					},
+					{
+						"type": "folder"
+					}
+				]
+			}
+		]
+	}
+]

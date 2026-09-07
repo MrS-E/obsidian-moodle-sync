@@ -1,167 +1,181 @@
 import { describe, expect, it, vi } from "vitest";
-import { noticeLog } from "./obsidian";
-import { runSyncV2, __test__ as syncTest } from "../src/sync";
+import { MoodleApi } from "../src/api/moodleApi";
+import { SyncState } from "../src/domain/syncState";
+import { MoodleSyncService } from "../src/sync/syncService";
 import { DEFAULT_STATE } from "../src/state";
+import { ObsidianVaultGateway } from "../src/vault/obsidianVaultGateway";
 import { createFakeApp } from "./helpers/fakeVault";
 
-describe("sync", () => {
-	it("plans module notes and resource links", async () => {
-		const planned = await syncTest.planModule(
-			{ call: vi.fn() } as unknown as Parameters<typeof syncTest.planModule>[0],
-			"Moodle/_resources/Course (42)",
-			{ id: 1, name: "Week 1" },
-			{
-				id: 7,
-				name: "Slides",
-				modname: "resource",
-				description: "<p>Hello</p>",
-				contents: [
-					{
-						type: "file",
-						filename: "slides.pdf",
-						fileurl: "https://example.com/slides.pdf",
-						filepath: "/week1/",
-						filesize: 12
-					}
-				]
-			},
-			7,
-			{ convertHtmlToMarkdown: true }
-		);
+describe("sync service", () => {
+	it("keeps dry runs entirely read-only", async () => {
+		const app = createFakeApp();
+		const saveState = vi.fn(async () => undefined);
+		const result = await runService(app, createClient().client, structuredClone(DEFAULT_STATE), saveState, "dry-run");
 
-		expect(planned.files).toEqual([
-			expect.objectContaining({
-				destPath: "Moodle/_resources/Course (42)/Slides/week1/slides.pdf"
-			})
-		]);
-		expect(planned.generatedFiles).toEqual([]);
-		expect(planned.noteText).toContain("Hello");
-		expect(planned.noteText).toContain("![[Moodle/_resources/Course (42)/Slides/week1/slides.pdf]]");
+		expect(app.files.size).toBe(0);
+		expect(app.folders.size).toBe(0);
+		expect(saveState).not.toHaveBeenCalled();
+		expect(result.summary).toContain("Moodle sync (dry-run) summary");
 	});
 
-	it("marks unresolved merges as conflicts", () => {
-		const merged = syncTest.mergeBlock({
-			name: "content",
-			base: "start",
-			local: "local change",
-			remote: "remote change"
+	it("migrates managed paths, rewrites resolved links, and remains idempotent", async () => {
+		const app = createFakeApp();
+		for (const folder of [
+			"Moodle",
+			"Moodle/_resources",
+			"Moodle/Math [101] (42)",
+			"Moodle/_resources/Math [101] (42)",
+			"Moodle/_resources/Math [101] (42)/Week [1]",
+			"Notes"
+		]) await app.vault.createFolder(folder);
+		await app.vault.create("Moodle/Math [101] (42)/Week [1].md", "# Week 1\n\n## My notes\n");
+		await app.vault.createBinary("Moodle/_resources/Math [101] (42)/Week [1]/slides [1].pdf", new ArrayBuffer(1));
+		await app.vault.create("Notes/references.md", "[[Moodle/Math [101] (42)/Week [1]|Week]]\n");
+		app.metadataCache.getFirstLinkpathDest = (linkPath: string) => app.vault.getAbstractFileByPath(`${linkPath}.md`) as never;
+
+		const { client, downloadResource } = createClient();
+		const state: SyncState = {
+			...structuredClone(DEFAULT_STATE),
+			files: { "Moodle/_resources/Math [101] (42)/Week [1]/slides [1].pdf": { timemodified: 10, filesize: 1 } },
+			notes: { "Moodle/Math [101] (42)/Week [1].md": { baseBlocks: {}, lastSyncedManagedHash: "" } }
+		};
+
+		await runService(app, client, state, vi.fn(async () => undefined), "apply");
+
+		expect(app.files.has("Moodle/Math-101 (42)/Week-1.md")).toBe(true);
+		expect(app.files.has("Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf")).toBe(true);
+		expect(app.files.get("Notes/references.md")?.text).toBe("[[Moodle/Math-101 (42)/Week-1|Week]]\n");
+		expect(state.pathMigrationVersion).toBe(1);
+		expect(downloadResource).not.toHaveBeenCalled();
+
+		await runService(app, client, state, vi.fn(async () => undefined), "apply");
+		expect(app.files.get("Notes/references.md")?.text).toBe("[[Moodle/Math-101 (42)/Week-1|Week]]\n");
+	});
+
+	it("reports failed downloads without recording them as current", async () => {
+		const app = createFakeApp();
+		const { client } = createClient();
+		client.downloadResource = vi.fn(async () => { throw new Error("offline"); });
+		const state = structuredClone(DEFAULT_STATE);
+
+		const result = await runService(
+			app,
+			client,
+			state,
+			vi.fn(async () => undefined),
+			"apply",
+			{ ...syncSettings(), writeLogFile: true }
+		);
+
+		expect(state.files).toEqual({});
+		expect(result.summary).toContain("Failures: 1 download");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("<h3>Errors</h3>");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("offline");
+	});
+
+	it("appends detailed dry-run and apply entries to the sync log", async () => {
+		const app = createFakeApp();
+		await app.vault.createFolder("Moodle");
+		await app.vault.create("Moodle/_sync-log.md", "# Moodle sync log\n\nPrevious entry\n");
+		const state = structuredClone(DEFAULT_STATE);
+		const settings = { ...syncSettings(), writeLogFile: true, includeActionsInLogDetails: true };
+
+		await runService(app, createClient().client, state, vi.fn(async () => undefined), "dry-run", settings);
+		await runService(app, createClient().client, state, vi.fn(async () => undefined), "apply", settings);
+
+		const log = app.files.get("Moodle/_sync-log.md")?.text ?? "";
+		expect(log).toContain("Previous entry");
+		expect(log).toContain("Moodle sync (dry-run) summary:");
+		expect(log).toContain("Moodle sync summary:");
+		expect(log).toContain("<h3>Planned actions</h3>");
+		expect(log).toContain("<li>Ensure folder: Moodle</li>");
+		expect(log).toContain("<li>Download resource: Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf</li>");
+		expect(log).not.toContain("### Planned actions");
+		expect(log.match(/<details>/g)).toHaveLength(2);
+		expect(log.match(/<\/details>/g)).toHaveLength(2);
+	});
+
+	it("writes a denied quiz-review error to the attempt note and sync log", async () => {
+		const app = createFakeApp();
+		const { client } = createClient();
+		client.getCourseContents = vi.fn(async () => [{
+			id: 1,
+			name: "Week 1",
+			modules: [{ id: 9, instance: 19, name: "Quiz", modname: "quiz" }]
+		}]);
+		client.getFinishedQuizAttempts = vi.fn(async () => [{ id: 12, state: "finished" }]);
+		client.getQuizAttemptReview = vi.fn(async () => {
+			throw new Error("Moodle API mod_quiz_get_attempt_review failed: You may not review this quiz.");
 		});
 
-		expect(merged.conflicted).toBe(true);
-		expect(merged.inner).toContain("### Local");
-		expect(merged.inner).toContain("### Remote");
-	});
-
-	it("runs a dry-run sync and writes a log note", async () => {
-		const app = createFakeApp();
-		const client = {
-			call: vi.fn(async (method: string) => {
-				if (method === "core_webservice_get_site_info") {
-					return { userid: 7, username: "alice", sitename: "Moodle" };
-				}
-				if (method === "core_enrol_get_users_courses") {
-					return [{ id: 42, fullname: "Databases" }];
-				}
-				if (method === "core_course_get_contents") {
-					return [{
-						id: 1,
-						name: "Week 1",
-						modules: [{
-							id: 9,
-							name: "Overview",
-							modname: "label",
-							description: "<p>Intro</p>"
-						}]
-					}];
-				}
-				throw new Error(`Unexpected method ${method}`);
-			})
-		};
-
-		const progress = {
-			totalSteps: 0,
-			setStatus: vi.fn(),
-			tick: vi.fn()
-		};
-
-		await runSyncV2(
-			app as never,
-			client as never,
-			{
-				rootFolder: "Moodle",
-				resourcesFolder: "Moodle/_resources",
-				concurrency: 2,
-				convertHtmlToMarkdown: true,
-				writeLogFile: true,
-				logFilePath: "Moodle/_sync-log.md"
-			},
+		const result = await runService(
+			app,
+			client,
 			structuredClone(DEFAULT_STATE),
 			vi.fn(async () => undefined),
-			"dry-run",
-			progress
+			"apply",
+			{ ...syncSettings(), writeLogFile: true }
 		);
 
-		expect(progress.setStatus).toHaveBeenCalled();
-		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run) summary");
-		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Moodle sync (dry-run) summary");
-	});
-
-	it("skips downloads when file metadata is unchanged and file exists", () => {
-		const app = createFakeApp();
-		void app.vault.createBinary("Moodle/file.pdf", new Uint8Array([1]).buffer);
-
-		expect(syncTest.shouldDownload(
-			{
-				files: { "Moodle/file.pdf": { timemodified: 10, filesize: 100 } },
-				notes: {}
-			},
-			"Moodle/file.pdf",
-			10,
-			100,
-			app as never
-		)).toBe(false);
-	});
-
-	it("renders summaries and conflict tags consistently", () => {
-		const summary = syncTest.renderSummary({
-			mode: "dry-run",
-			actions: [],
-			summary: {
-				courses: 2,
-				notesCreate: 1,
-				notesUpdate: 2,
-				noteConflicts: 3,
-				filesDownload: 4,
-				filesGenerate: 6,
-				filesSkip: 5,
-				bytesToDownload: 2048
-			},
-			meta: {}
-		}, true);
-
-		expect(summary).toContain("Moodle sync (dry-run) summary:");
-		expect(summary).toContain("4 download (2.0 KB)");
-		expect(syncTest.ensureConflictTags("content")).toBe("#colition #conflict\n\ncontent");
-		expect(syncTest.ensureConflictTags("#conflict\n\ncontent")).toBe("#conflict\n\ncontent");
-	});
-
-	it("deduplicates ensure-folder actions and hashes normalized blocks", () => {
-		expect(syncTest.dedupeEnsureFolder([
-			{ kind: "ensure-folder", path: "A" },
-			{ kind: "ensure-folder", path: "A" },
-			{ kind: "file-skip", destPath: "B" }
-		])).toEqual([
-			{ kind: "ensure-folder", path: "A" },
-			{ kind: "file-skip", destPath: "B" }
-		]);
-
-		expect(syncTest.normalizeBlocks({ a: "x  ", b: "y\n" })).toEqual({ a: "x", b: "y" });
-		expect(syncTest.hashBlocks({ b: "2", a: "1" })).toBe(syncTest.hashBlocks({ a: "1", b: "2" }));
-	});
-
-	it("preserves empty lines when converting to and from line arrays", () => {
-		const lines = syncTest.toLinesPreserveEmpty("a\nb\n");
-		expect(lines).toEqual(["a", "b", ""]);
-		expect(syncTest.fromLines(lines)).toBe("a\nb\n");
+		expect(app.files.get("Moodle/_resources/Math-101 (42)/Quiz/attempt-12.md")?.text)
+			.toContain("You may not review this quiz.");
+		expect(result.summary).toContain("Warnings: 1 quiz review unavailable");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Attempt 12: Moodle API mod_quiz_get_attempt_review failed");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).not.toContain("<h3>Planned actions</h3>");
 	});
 });
+
+function createClient(): { client: MoodleApi; downloadResource: ReturnType<typeof vi.fn> } {
+	const downloadResource = vi.fn(async () => new ArrayBuffer(0));
+	return { client: {
+		getSiteInfo: vi.fn(async () => ({ userid: 7 })),
+		getEnrolledCourses: vi.fn(async () => [{ id: 42, fullname: "Math [101]" }]),
+		getCourseContents: vi.fn(async () => [{
+			id: 1,
+			name: "Week 1",
+			modules: [{
+				id: 9,
+				name: "Week [1]",
+				modname: "resource",
+				description: "<p>Intro</p>",
+				contents: [{
+					type: "file",
+					filename: "slides [1].pdf",
+					fileurl: "https://example.com/slides.pdf",
+					timemodified: 10,
+					filesize: 1
+				}]
+			}]
+		}]),
+		getFinishedQuizAttempts: vi.fn(async () => []),
+		getQuizAttemptReview: vi.fn(async () => ({})),
+		downloadResource
+	}, downloadResource };
+}
+
+function syncSettings() {
+	return {
+		rootFolder: "Moodle",
+		resourcesFolder: "Moodle/_resources",
+		concurrency: 2,
+		writeLogFile: false,
+		logFilePath: "Moodle/_sync-log.md",
+		includeActionsInLogDetails: false
+	};
+}
+
+function progress() {
+	return { totalSteps: 0, setStatus: vi.fn(), tick: vi.fn() };
+}
+
+async function runService(
+	app: ReturnType<typeof createFakeApp>,
+	client: MoodleApi,
+	state: SyncState,
+	saveState: (state: SyncState) => Promise<void>,
+	mode: "apply" | "dry-run",
+	settings = syncSettings()
+) {
+	return await new MoodleSyncService(client, new ObsidianVaultGateway(app as never))
+		.run(settings, state, saveState, mode, progress());
+}
