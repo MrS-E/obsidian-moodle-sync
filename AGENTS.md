@@ -39,6 +39,7 @@ npm run build
 - Run `npm run lint` for the repository ESLint configuration.
 - Run `npm test` for deterministic Vitest unit, UI, and in-process integration coverage.
 - Run `npm run build` to type-check and bundle the release artifact.
+- Run `npm run package` to create a versioned deployable archive in `dist/` containing `main.js`, `manifest.json`, and `styles.css`.
 - Run `OBSIDIAN_PATH=/path/to/Obsidian npm run test:e2e` only when a local desktop Obsidian executable is available. This builds the plugin and runs the opt-in Playwright smoke suite in a disposable vault.
 
 ## File & folder conventions

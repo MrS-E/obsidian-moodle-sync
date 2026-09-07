@@ -1,0 +1,30 @@
+name: Package plugin
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - run: npm run package
+      - name: Verify release archive
+        run: unzip -t dist/*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moodle-sync-plugin
+          path: dist/*.zip
+          if-no-files-found: error

@@ -193,10 +193,13 @@ Useful commands:
 ```bash
 npm run dev
 npm run build
+npm run package
 npm run lint
 npm test
 npm run test:e2e
 ```
+
+`npm run package` runs the production build and creates `dist/moodle-sync-<version>.zip`. Extract its three files directly into `<Vault>/.obsidian/plugins/moodle-sync/` to install the plugin. The **Package plugin** GitHub Actions workflow runs the same command and uploads the archive on pushes, pull requests, and manual runs.
 
 `npm run test:e2e` builds the plugin and runs the opt-in real-Obsidian smoke suite. Set `OBSIDIAN_PATH` to the local Obsidian executable; the suite creates a disposable vault, uses a local fixture Moodle server, and retains Playwright traces/screenshots only when a test fails. Normal `npm test` remains deterministic and does not require Obsidian.
 
