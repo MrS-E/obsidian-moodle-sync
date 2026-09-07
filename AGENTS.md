@@ -1,10 +1,11 @@
-# Obsidian community plugin
+# Moodle Sync for Obsidian contributor guide
 
 ## Project overview
 
-- Target: Obsidian Community Plugin (TypeScript → bundled JavaScript).
-- Entry point: `main.ts` compiled to `main.js` and loaded by Obsidian.
+- Target: desktop-only Obsidian Community Plugin (TypeScript → bundled JavaScript).
+- Entry point: `src/main.ts` compiled to `main.js` and loaded by Obsidian.
 - Required release artifacts: `main.js`, `manifest.json`, and optional `styles.css`.
+- Moodle is the only external service. Do not add telemetry, analytics, or unrelated network integrations.
 
 ## Environment & tooling
 
@@ -13,7 +14,7 @@
 - **Bundler: esbuild** (required for this sample - `esbuild.config.mjs` and build scripts depend on it). Alternative bundlers like Rollup or webpack are acceptable for other projects if they bundle all external dependencies into `main.js`.
 - Types: `obsidian` type definitions.
 
-**Note**: This sample project has specific technical dependencies on npm and esbuild. If you're creating a plugin from scratch, you can choose different tools, but you'll need to replace the build configuration accordingly.
+This project uses npm and esbuild. Do not replace the toolchain without also updating the build, test, and release documentation.
 
 ### Install
 
@@ -35,34 +36,30 @@ npm run build
 
 ## Linting
 
-- To use eslint install eslint from terminal: `npm install -g eslint`
-- To use eslint to analyze this project use this command: `eslint main.ts`
-- eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder: `eslint ./src/`
+- Run `npm run lint` for the repository ESLint configuration.
+- Run `npm test` for deterministic Vitest unit, UI, and in-process integration coverage.
+- Run `npm run build` to type-check and bundle the release artifact.
+- Run `OBSIDIAN_PATH=/path/to/Obsidian npm run test:e2e` only when a local desktop Obsidian executable is available. This builds the plugin and runs the opt-in Playwright smoke suite in a disposable vault.
 
 ## File & folder conventions
 
-- **Organize code into multiple files**: Split functionality across separate modules rather than putting everything in `main.ts`.
-- Source lives in `src/`. Keep `main.ts` small and focused on plugin lifecycle (loading, unloading, registering commands).
-- **Example file structure**:
-  ```
-  src/
-    main.ts           # Plugin entry point, lifecycle management
-    settings.ts       # Settings interface and defaults
-    commands/         # Command implementations
-      command1.ts
-      command2.ts
-    ui/              # UI components, modals, views
-      modal.ts
-      view.ts
-    utils/           # Utility functions, helpers
-      helpers.ts
-      constants.ts
-    types.ts         # TypeScript interfaces and types
-  ```
-- **Do not commit build artifacts**: Never commit `node_modules/`, `main.js`, or other generated files to version control.
+- Source lives in `src/`. Keep `src/main.ts` lifecycle-only: load settings, register the settings tab and commands, and clean up on unload.
+- Keep Moodle REST transport, endpoint fallbacks, and runtime response decoders in `src/api/`. Downstream code must consume validated domain models rather than `unknown` Moodle JSON.
+- Keep remote discovery in `src/discovery/`, side-effect-free action construction in `src/planning/`, and all vault/state mutations in `src/execution/`.
+- Keep managed-block merging in `src/merge/`, Moodle HTML and quiz-attempt Markdown rendering in `src/rendering/`, legacy path migration/link rewriting in `src/migration/`, and Obsidian-specific vault access in `src/vault/`.
+- Register stable commands in `src/commands/registerCommands.ts`; do not rename the released command IDs `test-connection`, `sync-now-apply`, or `sync-now-dry-run`.
+- Never manually edit generated `main.js` or commit `node_modules/`.
 - Keep the plugin small. Avoid large dependencies. Prefer browser-compatible packages.
 - Generated output should be placed at the plugin root or `dist/` depending on your build setup. Release artifacts must end up at the top level of the plugin folder in the vault (`main.js`, `manifest.json`, `styles.css`).
+
+## Sync architecture guardrails
+
+- `createSyncPlan` must remain deterministic and free of vault writes or network calls. Add new behavior as typed plan actions.
+- `PlanExecutor` is the only sync component that may mutate vault files or persisted sync state. Preserve expected-content-hash checks before replacing notes.
+- Preserve managed-block markers, diff3 behavior, conflict markers, and the user-owned `## My notes` section when changing note handling.
+- Route every generated path segment through the normalizer. Resolve normalized collisions deterministically with Moodle IDs; never overwrite a managed note or resource because of a name collision.
+- Treat legacy generated paths as a versioned, idempotent migration. Rewrite only resolved internal references and preserve aliases, suffixes, embeds, Markdown-link style, external URLs, and code spans/blocks.
+- Render rich Moodle content and finished quiz attempts as Markdown. Safe inline HTML is an allowed fallback when Markdown conversion would lose structure; do not reintroduce HTML/PDF quiz artifacts into the sync flow.
 
 ## Manifest rules (`manifest.json`)
 
