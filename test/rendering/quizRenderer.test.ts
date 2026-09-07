@@ -36,4 +36,20 @@ describe("quiz Markdown renderer", () => {
 		expect(plan.files[0]?.destPath).toBe("Moodle/_resources/Course (42)/Quiz/attempt-18.md");
 		expect(plan.files[0]?.text).toContain("No detailed review content was returned by Moodle.");
 	});
+
+	it("renders a Moodle review error inside the attempt note", () => {
+		const plan = renderQuizAttemptNotes("Moodle/_resources/Course (42)/Quiz", {
+			id: 7,
+			instance: 9,
+			modname: "quiz"
+		}, [{
+			attempt: { id: 18, status: "finished" },
+			review: {},
+			reviewError: "Moodle API mod_quiz_get_attempt_review failed: You may not review this quiz."
+		}]);
+
+		expect(plan.files[0]?.text).toContain("## Review unavailable");
+		expect(plan.files[0]?.text).toContain("You may not review this quiz.");
+		expect(plan.files[0]?.text).not.toContain("No detailed review content was returned by Moodle.");
+	});
 });

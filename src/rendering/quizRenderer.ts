@@ -19,13 +19,13 @@ export function renderQuizAttemptNotes(
 	attempts: RemoteQuizAttempt[]
 ): QuizAttemptPlan {
 	const files: QuizMarkdownNote[] = [];
-	for (const { attempt, review } of attempts) {
-		files.push({ destPath: `${moduleFolder}/attempt-${attempt.id}.md`, text: renderQuizAttempt(module, attempt, review) });
+	for (const { attempt, review, reviewError } of attempts) {
+		files.push({ destPath: `${moduleFolder}/attempt-${attempt.id}.md`, text: renderQuizAttempt(module, attempt, review, reviewError) });
 	}
 	return { resourceLinks: files.map(file => `- [[${file.destPath.slice(0, -3)}]]`), files };
 }
 
-export function renderQuizAttempt(module: QuizModule, attempt: QuizAttempt, review: QuizReview): string {
+export function renderQuizAttempt(module: QuizModule, attempt: QuizAttempt, review: QuizReview, reviewError?: string): string {
 	const title = module.name ?? `Quiz ${module.id}`;
 	const meta = [
 		["Attempt ID", String(attempt.id)],
@@ -40,9 +40,10 @@ export function renderQuizAttempt(module: QuizModule, attempt: QuizAttempt, revi
 		meta.join("\n"),
 		renderHtmlSection("Quiz description", module.description),
 		renderHtmlSection("Summary", review.summary ?? review.feedback ?? review.overallfeedback),
-		renderQuestions(review.questions)
+		renderQuestions(review.questions),
+		reviewError ? renderReviewError(reviewError) : ""
 	].filter(Boolean);
-	if (!review.summary && !review.feedback && !review.overallfeedback && !review.questions?.length) {
+	if (!reviewError && !review.summary && !review.feedback && !review.overallfeedback && !review.questions?.length) {
 		sections.push("## Attempt data\n\nNo detailed review content was returned by Moodle.");
 	}
 	return sections.join("\n\n").replace(/\s+$/, "") + "\n";
@@ -59,6 +60,13 @@ function renderQuestions(questions: QuizQuestion[] | undefined): string {
 
 function renderHtmlSection(title: string, html: string | undefined): string {
 	return html?.trim() ? `## ${title}\n\n${renderMoodleHtml(html)}` : "";
+}
+
+function renderReviewError(error: string): string {
+	const message = error.trim() || "Moodle did not provide an error message.";
+	const longestBacktickRun = Math.max(2, ...(message.match(/`+/g) ?? []).map(match => match.length));
+	const fence = "`".repeat(longestBacktickRun + 1);
+	return `## Review unavailable\n\nMoodle did not return the detailed review for this attempt.\n\n${fence}text\n${message}\n${fence}`;
 }
 
 function display(value: MoodleDisplayValue | undefined): string {

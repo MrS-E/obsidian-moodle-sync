@@ -16,10 +16,13 @@ export class RemoteDiscovery {
 				for (const module of section.modules ?? []) {
 					if (module.modname !== "quiz" || !module.instance) continue;
 					const attempts = await this.api.getFinishedQuizAttempts(module.instance, site.userid);
-					const reviews = await Promise.all(attempts.map(async attempt => ({
-						attempt,
-						review: await this.api.getQuizAttemptReview(attempt.id)
-					})));
+					const reviews = await Promise.all(attempts.map(async attempt => {
+						try {
+							return { attempt, review: await this.api.getQuizAttemptReview(attempt.id) };
+						} catch (error: unknown) {
+							return { attempt, review: {}, reviewError: errorMessage(error) };
+						}
+					}));
 					quizAttempts.set(module.id, reviews);
 				}
 			}
@@ -28,4 +31,8 @@ export class RemoteDiscovery {
 
 		return { site, courses: discoveredCourses };
 	}
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

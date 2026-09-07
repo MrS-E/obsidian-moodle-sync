@@ -1,5 +1,6 @@
 import { MoodleApi } from "../api/moodleApi";
 import { RemoteDiscovery } from "../discovery/remoteDiscovery";
+import { RemoteSyncData } from "../domain/models";
 import { SyncState } from "../domain/syncState";
 import { PlanExecutor, SyncProgress } from "../execution/planExecutor";
 import { SyncMode, SyncPlan } from "../planning/actions";
@@ -35,17 +36,18 @@ export class MoodleSyncService {
 	): Promise<SyncRunResult> {
 		progress.setStatus("Moodle sync: discovering Moodle content...");
 		const remote = await new RemoteDiscovery(this.api).discover();
+		const reviewWarnings = collectQuizReviewWarnings(remote);
 		const snapshot = await new VaultSnapshotReader(this.vault).read();
 		const plan = createSyncPlan(remote, snapshot, state, settings, mode);
 		progress.totalSteps = plan.actions.length;
 
 		if (mode === "dry-run") {
-			return { plan, summary: renderSyncSummary(plan, true, 0), failedDownloads: [] };
+			return { plan, summary: renderSyncSummary(plan, true, 0, reviewWarnings), failedDownloads: [] };
 		}
 
 		const executor = new PlanExecutor(this.vault, this.api, settings.concurrency);
 		const result = await executor.execute(plan, state, saveState, progress);
-		const summary = renderSyncSummary(plan, false, result.failedDownloads.length);
+		const summary = renderSyncSummary(plan, false, result.failedDownloads.length, reviewWarnings);
 		if (settings.writeLogFile) {
 			await executor.appendLog(settings.logFilePath, summary);
 		}
@@ -53,7 +55,7 @@ export class MoodleSyncService {
 	}
 }
 
-export function renderSyncSummary(plan: SyncPlan, dryRun: boolean, failedDownloads: number): string {
+export function renderSyncSummary(plan: SyncPlan, dryRun: boolean, failedDownloads: number, reviewWarnings: string[] = []): string {
 	const summary = plan.summary;
 	const heading = dryRun ? "Moodle sync (dry-run) summary" : "Moodle sync summary";
 	const lines = [
@@ -64,5 +66,16 @@ export function renderSyncSummary(plan: SyncPlan, dryRun: boolean, failedDownloa
 		`- Files: ${summary.resourcesDownload} download (${formatBytes(summary.bytesToDownload)}), ${summary.markdownGenerate} generated, ${summary.resourcesSkip} skip`
 	];
 	if (failedDownloads > 0) lines.push(`- Failures: ${failedDownloads} download${failedDownloads === 1 ? "" : "s"}`);
+	if (reviewWarnings.length > 0) {
+		lines.push(`- Warnings: ${reviewWarnings.length} quiz review${reviewWarnings.length === 1 ? "" : "s"} unavailable`);
+		lines.push(...reviewWarnings.map(warning => `  - ${warning}`));
+	}
 	return lines.join("\n");
+}
+
+function collectQuizReviewWarnings(remote: RemoteSyncData): string[] {
+	return remote.courses.flatMap(({ quizAttempts }) => [...quizAttempts.values()]
+		.flatMap(attempts => attempts.flatMap(({ attempt, reviewError }) => reviewError
+			? [`Attempt ${attempt.id}: ${reviewError}`]
+			: [])));
 }

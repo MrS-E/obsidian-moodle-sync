@@ -63,6 +63,34 @@ describe("sync service", () => {
 		expect(state.files).toEqual({});
 		expect(result.summary).toContain("Failures: 1 download");
 	});
+
+	it("writes a denied quiz-review error to the attempt note and sync log", async () => {
+		const app = createFakeApp();
+		const { client } = createClient();
+		client.getCourseContents = vi.fn(async () => [{
+			id: 1,
+			name: "Week 1",
+			modules: [{ id: 9, instance: 19, name: "Quiz", modname: "quiz" }]
+		}]);
+		client.getFinishedQuizAttempts = vi.fn(async () => [{ id: 12, state: "finished" }]);
+		client.getQuizAttemptReview = vi.fn(async () => {
+			throw new Error("Moodle API mod_quiz_get_attempt_review failed: You may not review this quiz.");
+		});
+
+		const result = await runService(
+			app,
+			client,
+			structuredClone(DEFAULT_STATE),
+			vi.fn(async () => undefined),
+			"apply",
+			{ ...syncSettings(), writeLogFile: true }
+		);
+
+		expect(app.files.get("Moodle/_resources/Math-101 (42)/Quiz/attempt-12.md")?.text)
+			.toContain("You may not review this quiz.");
+		expect(result.summary).toContain("Warnings: 1 quiz review unavailable");
+		expect(app.files.get("Moodle/_sync-log.md")?.text).toContain("Attempt 12: Moodle API mod_quiz_get_attempt_review failed");
+	});
 });
 
 function createClient(): { client: MoodleApi; downloadResource: ReturnType<typeof vi.fn> } {
@@ -112,8 +140,9 @@ async function runService(
 	client: MoodleApi,
 	state: SyncState,
 	saveState: (state: SyncState) => Promise<void>,
-	mode: "apply" | "dry-run"
+	mode: "apply" | "dry-run",
+	settings = syncSettings()
 ) {
 	return await new MoodleSyncService(client, new ObsidianVaultGateway(app as never))
-		.run(syncSettings(), state, saveState, mode, progress());
+		.run(settings, state, saveState, mode, progress());
 }

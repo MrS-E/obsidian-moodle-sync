@@ -76,6 +76,7 @@ export interface QuizReview {
 export interface RemoteQuizAttempt {
 	attempt: QuizAttempt;
 	review: QuizReview;
+	reviewError?: string;
 }
 
 export interface RemoteCourse {

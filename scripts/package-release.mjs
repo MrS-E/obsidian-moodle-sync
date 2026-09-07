@@ -1,6 +1,7 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
+import { Buffer } from "node:buffer";
 
 const releaseFiles = ["main.js", "manifest.json", "styles.css"];
 
