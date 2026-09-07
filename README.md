@@ -10,8 +10,8 @@ What that means in practice:
 
 - The core sync flow works.
 - The vault structure and note format are already opinionated.
-- Incremental sync, merge handling, and quiz export exist.
-- The plugin is still missing hardening, better UX, and broader Moodle compatibility testing.
+- Incremental sync, managed-block merge handling, path migration, and Markdown quiz attempts exist.
+- The plugin is still missing broader Moodle compatibility testing and release validation in real Obsidian.
 
 This is usable for real-world testing, but not yet something I would call production-ready.
 
@@ -31,7 +31,8 @@ Current behavior:
 - Marks unresolved conflicts instead of silently overwriting content.
 - Supports dry-run planning before applying changes.
 - Can append sync summaries to a log note.
-- Exports finished quiz attempts as `.html` and `.pdf` files and links them from the module note.
+- Renders finished quiz attempts as linked Markdown notes.
+- Migrates legacy plugin-generated paths to link-safe normalized names and rewrites resolved internal links.
 
 ## Current vault layout
 
@@ -48,11 +49,10 @@ Moodle/
       Lecture 1/
         slides.pdf
       Quiz 1/
-        attempt-17.html
-        attempt-17.pdf
+        attempt-17.md
 ```
 
-The exact folder names depend on your settings and Moodle course/module names.
+The exact folder names depend on your settings and Moodle course/module names. Generated path segments are Unicode-normalized and replace characters that conflict with filesystem paths or Obsidian links. Existing plugin-managed folders and files are migrated once; unrelated vault files are never renamed. The migration updates resolved wikilinks, embeds, aliases, heading/block suffixes, and Markdown links that target moved plugin files.
 
 ## Synced note model
 
@@ -72,18 +72,17 @@ When Moodle content changes, the plugin compares:
 
 If the change can be merged safely, it updates the block automatically. If not, it keeps both versions and tags the note with conflict markers instead of dropping either side.
 
-## Quiz export
+## Quiz attempts
 
-Current quiz handling is limited but functional:
+Finished quiz attempts are rendered as Markdown notes:
 
 - Only quiz modules are considered.
 - Only finished attempts are exported.
-- Each exported attempt produces:
-  - an HTML snapshot
-  - a PDF rendered from that HTML
-- Generated quiz files are linked from the module note.
+- Each attempt produces one linked `.md` note.
+- Supported Moodle HTML is converted to readable Markdown.
+- Safe inline HTML is retained when conversion would lose quiz structure.
 
-This feature currently targets desktop Obsidian because PDF generation depends on Electron `webview.printToPDF`.
+The plugin remains desktop-only while its Obsidian integration is validated there.
 
 ## Commands
 
@@ -102,11 +101,10 @@ Current settings:
 - Root folder
 - Resources folder
 - Download concurrency
-- Convert descriptions
 - Write sync log file
 - Log file path
 
-`Convert descriptions` uses the built-in HTML-to-Markdown conversion. When disabled, module descriptions are stored as raw HTML code blocks.
+Descriptions and finished quiz attempts are always rendered as Markdown. The log file path is shown only when log writing is enabled.
 
 ## Installation for development
 
@@ -164,7 +162,7 @@ Current known limitations:
 - No selective sync by course.
 - No cancellation once a sync has started.
 - Moodle API compatibility may vary across installations and versions.
-- Quiz export focuses on finished attempts and review data only.
+- Quiz attempts focus on finished attempts and review data only.
 - HTML-to-Markdown conversion is intentionally simple and not lossless.
 - Large courses may still result in a lot of note writes and downloads.
 
@@ -177,7 +175,10 @@ npm run dev
 npm run build
 npm run lint
 npm test
+npm run test:e2e
 ```
+
+`npm run test:e2e` builds the plugin and runs the opt-in real-Obsidian smoke suite. Set `OBSIDIAN_PATH` to the local Obsidian executable; the suite creates a disposable vault, uses a local fixture Moodle server, and retains Playwright traces/screenshots only when a test fails. Normal `npm test` remains deterministic and does not require Obsidian.
 
 ## Roadmap direction
 
@@ -185,7 +186,7 @@ Near-term work is still around making the MVP solid:
 
 - improve settings and onboarding UX
 - harden error handling for more Moodle variants
-- improve quiz export coverage and formatting
+- improve quiz-attempt rendering coverage and formatting
 - reduce rough edges in large syncs
 - revisit token storage and security
 - add more real-world testing across courses and Moodle instances

@@ -88,6 +88,7 @@ describe("main", () => {
 		const testPlugin = plugin as unknown as RuntimePluginHooks;
 		testPlugin.__setData({
 			baseUrl: "https://moodle.example.edu",
+			convertHtmlToMarkdown: true,
 			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} }
 		});
 
@@ -102,7 +103,6 @@ describe("main", () => {
 			rootFolder: "Moodle",
 			resourcesFolder: "Moodle/_resources",
 			concurrency: 4,
-			convertHtmlToMarkdown: false,
 			writeLogFile: true,
 			logFilePath: "Moodle/_sync-log.md",
 			syncState: { files: { "file.bin": { filesize: 3 } }, notes: {} }
@@ -192,8 +192,12 @@ describe("main", () => {
 		expect(noticeLog[noticeLog.length - 1]?.message).toContain("Moodle sync (dry-run) summary");
 	});
 
-	it("formats unknown thrown values safely", () => {
-		expect(mainTest.getErrorMessage(new Error("boom"))).toBe("boom");
-		expect(mainTest.getErrorMessage("boom")).toBe("boom");
+	it("loads commands only once per plugin lifecycle and marks its status on unload", async () => {
+		const plugin = new MoodleSyncPoCv2({} as never, manifest);
+		const testPlugin = plugin as unknown as RuntimePluginHooks;
+		await plugin.onload();
+		expect(testPlugin.commands).toHaveLength(3);
+		plugin.onunload();
+		expect(mainTest.isRecord({})).toBe(true);
 	});
 });

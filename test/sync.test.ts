@@ -1,21 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import { MoodleApi } from "../src/api/moodleApi";
 import { SyncState } from "../src/domain/syncState";
-import { runSyncV2 } from "../src/sync";
+import { MoodleSyncService } from "../src/sync/syncService";
 import { DEFAULT_STATE } from "../src/state";
+import { ObsidianVaultGateway } from "../src/vault/obsidianVaultGateway";
 import { createFakeApp } from "./helpers/fakeVault";
-import { noticeLog } from "./obsidian";
 
-describe("sync service compatibility entry point", () => {
+describe("sync service", () => {
 	it("keeps dry runs entirely read-only", async () => {
 		const app = createFakeApp();
 		const saveState = vi.fn(async () => undefined);
-		await runSyncV2(app as never, createClient().client, syncSettings(), structuredClone(DEFAULT_STATE), saveState, "dry-run", progress());
+		const result = await runService(app, createClient().client, structuredClone(DEFAULT_STATE), saveState, "dry-run");
 
 		expect(app.files.size).toBe(0);
 		expect(app.folders.size).toBe(0);
 		expect(saveState).not.toHaveBeenCalled();
-		expect(noticeLog.at(-1)?.message).toContain("Moodle sync (dry-run) summary");
+		expect(result.summary).toContain("Moodle sync (dry-run) summary");
 	});
 
 	it("migrates managed paths, rewrites resolved links, and remains idempotent", async () => {
@@ -40,7 +40,7 @@ describe("sync service compatibility entry point", () => {
 			notes: { "Moodle/Math [101] (42)/Week [1].md": { baseBlocks: {}, lastSyncedManagedHash: "" } }
 		};
 
-		await runSyncV2(app as never, client, syncSettings(), state, vi.fn(async () => undefined), "apply", progress());
+		await runService(app, client, state, vi.fn(async () => undefined), "apply");
 
 		expect(app.files.has("Moodle/Math-101 (42)/Week-1.md")).toBe(true);
 		expect(app.files.has("Moodle/_resources/Math-101 (42)/Week-1/slides-1.pdf")).toBe(true);
@@ -48,7 +48,7 @@ describe("sync service compatibility entry point", () => {
 		expect(state.pathMigrationVersion).toBe(1);
 		expect(downloadResource).not.toHaveBeenCalled();
 
-		await runSyncV2(app as never, client, syncSettings(), state, vi.fn(async () => undefined), "apply", progress());
+		await runService(app, client, state, vi.fn(async () => undefined), "apply");
 		expect(app.files.get("Notes/references.md")?.text).toBe("[[Moodle/Math-101 (42)/Week-1|Week]]\n");
 	});
 
@@ -58,10 +58,10 @@ describe("sync service compatibility entry point", () => {
 		client.downloadResource = vi.fn(async () => { throw new Error("offline"); });
 		const state = structuredClone(DEFAULT_STATE);
 
-		await runSyncV2(app as never, client, syncSettings(), state, vi.fn(async () => undefined), "apply", progress());
+		const result = await runService(app, client, state, vi.fn(async () => undefined), "apply");
 
 		expect(state.files).toEqual({});
-		expect(noticeLog.at(-1)?.message).toContain("Failures: 1 download");
+		expect(result.summary).toContain("Failures: 1 download");
 	});
 });
 
@@ -105,4 +105,15 @@ function syncSettings() {
 
 function progress() {
 	return { totalSteps: 0, setStatus: vi.fn(), tick: vi.fn() };
+}
+
+async function runService(
+	app: ReturnType<typeof createFakeApp>,
+	client: MoodleApi,
+	state: SyncState,
+	saveState: (state: SyncState) => Promise<void>,
+	mode: "apply" | "dry-run"
+) {
+	return await new MoodleSyncService(client, new ObsidianVaultGateway(app as never))
+		.run(syncSettings(), state, saveState, mode, progress());
 }
